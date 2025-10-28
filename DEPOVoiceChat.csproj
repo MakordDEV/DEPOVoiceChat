@@ -40,6 +40,10 @@
     <Reference Include="BepInEx">
       <HintPath>D:\SteamLibrary\steamapps\common\DEPO\BepInEx\core\BepInEx.dll</HintPath>
     </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>D:\SteamLibrary\steamapps\common\DEPO\DEPO_Data\Managed\com.rlabrecque.steamworks.net.dll</HintPath>
+    </Reference>
     <Reference Include="Newtonsoft.Json">
       <HintPath>D:\SteamLibrary\steamapps\common\DEPO\DEPO_Data\Managed\Newtonsoft.Json.dll</HintPath>
     </Reference>
@@ -299,8 +303,14 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Class1.cs" />
+    <Compile Include="Main.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include=".gitignore" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include=".editorconfig" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
