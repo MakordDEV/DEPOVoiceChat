@@ -113,3 +113,5 @@ C:\Users\MAX\source\repos\DEPOVoiceChat\obj\Debug\DEPOVoiceChat.csproj.CoreCompi
 C:\Users\MAX\source\repos\DEPOVoiceChat\obj\Debug\DEPOVoic.0ED44BB9.Up2Date
 C:\Users\MAX\source\repos\DEPOVoiceChat\obj\Debug\DEPOVoiceChat.dll
 C:\Users\MAX\source\repos\DEPOVoiceChat\obj\Debug\DEPOVoiceChat.pdb
+C:\Users\MAX\source\repos\DEPOVoiceChat\bin\Debug\CSCore.dll
+C:\Users\MAX\source\repos\DEPOVoiceChat\bin\Debug\CSCore.xml

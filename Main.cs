@@ -1,314 +1,140 @@
 ﻿using BepInEx;
+using Steamworks;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using System.Net.Sockets;
-using System.Text;
-using System.Threading.Tasks;
-using System.Threading;
-using System.Collections.Generic;
-using Steamworks;
 
 namespace DEPOVoiceChat
 {
-    [BepInPlugin("ru.mxyffel_makordikrom.depovoicechat", "DEPO Voice Chat", "1.3.0")]
+    [BepInPlugin("ru.mxyffel_makordikrom.depovoicechat", "DEPO Voice Chat", "1.0.0")]
     public class Main : BaseUnityPlugin
     {
-        private TcpClient tcpClient;
-        private NetworkStream stream;
-        private CancellationTokenSource cts;
-        private string serverIp = "busiatep.ru";
-        private int serverPort = 6000;
-        private bool isConnecting = false;
-
-        private Dictionary<string, string> clientList = new Dictionary<string, string>();
-        private int heartbeatInterval = 5000;
-
-        private string steamId = "";
-        private string steamName = "";
-
         private bool showMenu = false;
-        private Rect menuRect = new Rect(100, 100, 400, 400);
-        private Vector2 scrollPos = Vector2.zero;
+        private Rect menuRect = new Rect(100, 100, 400, 340);
         private bool lockPlayerControl = false;
-
-        private bool hearSelf = true;
-        private float selfVolume = 1f;
-        private float playersVolume = 1f;
-        private string[] micDevices;
-        private int selectedMicIndex = 0;
-        private AudioSource selfAudioSource;
-        private string micName = "";
         private bool micDropdownOpen = false;
 
         void Awake()
         {
-            Logger.LogInfo("Voice Chat мод загружен.");
+            Debug.Log("Voice Chat mod loaded.");
+            SettingsManager.Load();
+            VoiceManager.InitDevices();
             InitializeSteam();
             SceneManager.activeSceneChanged += OnSceneChanged;
         }
 
         void Start()
         {
-            ConnectToServer();
-
-            micDevices = Microphone.devices;
-            if (micDevices.Length > 0)
+            NetworkManager.Connect();
+            if (VoiceManager.MicDevices.Length > 0)
             {
-                selectedMicIndex = 0;
-                StartMicrophone(micDevices[selectedMicIndex]);
+                int idx = SettingsManager.CurrentSettings.selectedMicIndex;
+                VoiceManager.StartCapture(idx);
             }
+        }
+
+        void OnDestroy()
+        {
+            VoiceManager.StopCapture();
         }
 
         void Update()
         {
-            if ((Input.GetKeyDown(KeyCode.RightAlt) || Input.GetKeyDown(KeyCode.LeftAlt)) && SceneManager.GetActiveScene().name != "menus")
+            if ((Input.GetKeyDown(KeyCode.RightAlt) || Input.GetKeyDown(KeyCode.LeftAlt)) &&
+                SceneManager.GetActiveScene().name != "menus")
             {
                 showMenu = !showMenu;
                 lockPlayerControl = showMenu;
-
-                if (showMenu)
-                {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
-                else
-                {
-                    Cursor.lockState = CursorLockMode.Locked;
-                    Cursor.visible = false;
-                }
+                Cursor.lockState = showMenu ? CursorLockMode.None : CursorLockMode.Locked;
+                Cursor.visible = showMenu;
+                if (!showMenu) micDropdownOpen = false;
             }
         }
 
         void OnGUI()
         {
-            if (showMenu)
-            {
-                menuRect = GUI.Window(0, menuRect, DrawClientMenu, "VoiceChat Menu");
-            }
+            if (showMenu) menuRect = GUI.Window(0, menuRect, DrawClientMenu, "VoiceChat Menu");
         }
+
         private void DrawClientMenu(int windowID)
         {
             GUILayout.BeginVertical();
-            GUILayout.Label($"Подключено клиентов: {clientList.Count}");
+            GUILayout.Label($"Connected clients: {NetworkManager.ClientList.Count}");
 
-            scrollPos = GUILayout.BeginScrollView(scrollPos, GUILayout.Height(150));
-            foreach (var kv in clientList)
+            GUILayout.Label("Volume players:");
+            SettingsManager.CurrentSettings.playersVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.playersVolume, 0f, 1f);
+
+            GUILayout.Label("Volume microphone:");
+            SettingsManager.CurrentSettings.selfVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.selfVolume, 0f, 1f);
+
+            bool newHearSelf = GUILayout.Toggle(SettingsManager.CurrentSettings.hearSelf, "Hear myself");
+            if (newHearSelf != SettingsManager.CurrentSettings.hearSelf)
             {
-                GUILayout.BeginHorizontal("box");
-                GUILayout.Label($"Имя: {kv.Value}");
-                GUILayout.EndHorizontal();
+                SettingsManager.CurrentSettings.hearSelf = newHearSelf;
+                VoiceManager.StopCapture();
+                if (newHearSelf) VoiceManager.StartCapture(SettingsManager.CurrentSettings.selectedMicIndex);
             }
-            GUILayout.EndScrollView();
 
-            GUILayout.Space(10);
-
-            GUILayout.Label("Громкость игроков: " + playersVolume.ToString("0.00"));
-            playersVolume = GUILayout.HorizontalSlider(playersVolume, 0f, 1f);
-
-            GUILayout.Label("Громкость себя: " + selfVolume.ToString("0.00"));
-            selfVolume = GUILayout.HorizontalSlider(selfVolume, 0f, 1f);
-
-            hearSelf = GUILayout.Toggle(hearSelf, "Услышать себя");
-            if (selfAudioSource != null)
-                selfAudioSource.mute = !hearSelf;
-
-            GUILayout.Label("Выбрать микрофон:");
-            if (micDevices != null && micDevices.Length > 0)
+            GUILayout.Space(8);
+            GUILayout.Label("Select microphone:");
+            if (GUILayout.Button(VoiceManager.MicDevices.Length > 0 ? VoiceManager.MicDevices[SettingsManager.CurrentSettings.selectedMicIndex] : "No microphone", GUILayout.Width(260)))
             {
-                if (GUILayout.Button(micDevices[selectedMicIndex])) 
-                {
-                    micDropdownOpen = !micDropdownOpen;
-                }
+                micDropdownOpen = !micDropdownOpen;
+            }
 
-                if (micDropdownOpen)
+            if (micDropdownOpen)
+            {
+                float width = 260;
+                float itemHeight = 24f;
+                float height = Mathf.Min(itemHeight * VoiceManager.MicDevices.Length, 6 * itemHeight);
+                float offsetX = -256; 
+
+                GUI.Box(new Rect(offsetX, menuRect.height - height, width, height), "");
+
+                for (int i = 0; i < VoiceManager.MicDevices.Length; i++)
                 {
-                    foreach (var device in micDevices)
+                    Rect btnRect = new Rect(offsetX, menuRect.height - height + i * itemHeight, width, itemHeight);
+                    if (GUI.Button(btnRect, VoiceManager.MicDevices[i]))
                     {
-                        if (GUILayout.Button(device))
-                        {
-                            selectedMicIndex = System.Array.IndexOf(micDevices, device);
-                            StartMicrophone(device);
-                            micDropdownOpen = false;
-                        }
+                        SettingsManager.CurrentSettings.selectedMicIndex = i;
+                        VoiceManager.StopCapture();
+                        if (SettingsManager.CurrentSettings.hearSelf)
+                            VoiceManager.StartCapture(i);
+                        micDropdownOpen = false;
                     }
                 }
             }
-            else GUILayout.Label("Нет доступных микрофонов");
 
-            GUILayout.Space(10);
-            if (GUILayout.Button("Закрыть"))
+            if (GUILayout.Button("Close"))
             {
                 showMenu = false;
+                micDropdownOpen = false;
                 lockPlayerControl = false;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
+                SettingsManager.Save();
             }
 
             GUILayout.EndVertical();
             GUI.DragWindow();
-        }
-        private void StartMicrophone(string device)
-        {
-            micName = device;
-            if (selfAudioSource == null)
-            {
-                GameObject go = new GameObject("SelfMicAudio");
-                selfAudioSource = go.AddComponent<AudioSource>();
-                selfAudioSource.loop = true;
-            }
-            if (Microphone.IsRecording(micName)) Microphone.End(micName);
-            selfAudioSource.clip = Microphone.Start(micName, true, 10, 44100);
-            while (!(Microphone.GetPosition(micName) > 0)) { } 
-            selfAudioSource.Play();
-        }
-
-        void LateUpdate()
-        {
-            if (selfAudioSource != null)
-            {
-                selfAudioSource.volume = hearSelf ? selfVolume : 0f;
-            }
         }
 
         private void InitializeSteam()
         {
             try
             {
-                if (!SteamAPI.Init()) Logger.LogError("SteamAPI.Init() не удалось!");
-                else
-                {
-                    steamId = SteamUser.GetSteamID().m_SteamID.ToString();
-                    steamName = SteamFriends.GetPersonaName();
-                    Logger.LogInfo($"Steam инициализирован: {steamName} ({steamId})");
-                }
+                if (!SteamAPI.Init()) Debug.LogError("SteamAPI init failed!");
             }
-            catch (System.Exception ex)
-            {
-                Logger.LogError("Ошибка инициализации Steam: " + ex.Message);
-            }
-        }
-
-        private void ConnectToServer()
-        {
-            if (isConnecting) return;
-            isConnecting = true;
-            cts = new CancellationTokenSource();
-
-            Task.Run(async () =>
-            {
-                while (!cts.Token.IsCancellationRequested)
-                {
-                    if (tcpClient == null || !tcpClient.Connected)
-                    {
-                        try
-                        {
-                            tcpClient?.Close();
-                            tcpClient = new TcpClient();
-                            await tcpClient.ConnectAsync(serverIp, serverPort);
-                            stream = tcpClient.GetStream();
-                            Logger.LogInfo("TCP соединение установлено.");
-
-                            await SendClientInfo();
-                            _ = Task.Run(() => HeartbeatLoop(cts.Token));
-                            _ = Task.Run(() => ReceiveLoop(cts.Token));
-
-                            while (tcpClient.Connected && !cts.Token.IsCancellationRequested)
-                                await Task.Delay(1000);
-                        }
-                        catch (System.Exception ex)
-                        {
-                            Logger.LogError("Ошибка TCP: " + ex.Message);
-                        }
-                    }
-
-                    await Task.Delay(5000);
-                }
-            });
+            catch { Debug.LogError("Error occured when SteamAPI init."); }
         }
 
         private void OnSceneChanged(Scene oldScene, Scene newScene)
         {
-            Logger.LogInfo($"Смена сцены: {oldScene.name} -> {newScene.name}");
             Task.Run(async () =>
             {
-                string infoMsg = $"INFO|{steamId}|{steamName}|{newScene.name}";
-                await SendMessage(infoMsg);
+                string msg = $"INFO|{SteamUser.GetSteamID().m_SteamID}|{SteamFriends.GetPersonaName()}|{newScene.name}";
+                await NetworkManager.SendMessage(msg);
             });
-        }
-
-        private async Task SendClientInfo()
-        {
-            string sceneName = SceneManager.GetActiveScene().name;
-            string infoMsg = $"INFO|{steamId}|{steamName}|{sceneName}";
-            await SendMessage(infoMsg);
-        }
-
-        private async Task HeartbeatLoop(CancellationToken token)
-        {
-            while (!token.IsCancellationRequested)
-            {
-                await Task.Delay(heartbeatInterval);
-                await SendMessage("HEARTBEAT");
-            }
-        }
-
-        private async Task ReceiveLoop(CancellationToken token)
-        {
-            byte[] buffer = new byte[4096];
-            while (!token.IsCancellationRequested)
-            {
-                if (stream.DataAvailable)
-                {
-                    int read = await stream.ReadAsync(buffer, 0, buffer.Length, token);
-                    if (read > 0)
-                    {
-                        string message = Encoding.UTF8.GetString(buffer, 0, read);
-                        HandleServerMessage(message);
-                    }
-                }
-                else await Task.Delay(50);
-            }
-        }
-        private void HandleServerMessage(string message)
-        {
-            if (message.StartsWith("CLIENTS"))
-            {
-                clientList.Clear();
-                string[] parts = message.Split('|');
-                if (parts.Length > 1)
-                {
-                    foreach (var c in parts[1].Split(','))
-                    {
-                        string[] kv = c.Split(':');
-                        if (kv.Length == 2) clientList[kv[0]] = kv[1];
-                    }
-                }
-                Logger.LogInfo("Обновлен список клиентов: " + clientList.Count);
-            }
-            else if (message.StartsWith("SETTINGS"))
-                Logger.LogInfo("Получены настройки: " + message);
-            else if (message.StartsWith("DISCONNECT"))
-            {
-                Logger.LogWarning("Сервер разорвал соединение: " + message.Substring("DISCONNECT|".Length));
-                tcpClient?.Close();
-            }
-        }
-
-        private async Task SendMessage(string msg)
-        {
-            if (tcpClient != null && tcpClient.Connected)
-            {
-                byte[] data = Encoding.UTF8.GetBytes(msg);
-                try { await stream.WriteAsync(data, 0, data.Length); }
-                catch { Logger.LogError("Не удалось отправить сообщение TCP."); }
-            }
-        }
-
-        void OnDestroy()
-        {
-            cts?.Cancel();
-            tcpClient?.Close();
-            if (Microphone.IsRecording(micName)) Microphone.End(micName);
         }
     }
 }
