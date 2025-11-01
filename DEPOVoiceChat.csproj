@@ -320,4 +320,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>xcopy "$(TargetPath)" "D:\SteamLibrary\steamapps\common\DEPO\BepInEx\plugins\" /Y /I</PostBuildEvent>
+  </PropertyGroup>
 </Project>

@@ -1,10 +1,10 @@
-﻿using UnityEngine;
-using CSCore;
-using CSCore.SoundIn;
-using CSCore.Streams;
-using CSCore.SoundOut;
+﻿using CSCore;
 using CSCore.CoreAudioAPI;
+using CSCore.SoundIn;
+using CSCore.SoundOut;
+using CSCore.Streams;
 using System;
+using UnityEngine;
 
 namespace DEPOVoiceChat
 {
@@ -39,7 +39,7 @@ namespace DEPOVoiceChat
             }
             catch (Exception e)
             {
-                Debug.LogError("CSCore: InitDevices failed: " + e.Message);
+                Debug.LogError("[VoiceChat] CSCore: InitDevices failed: " + e.Message);
                 MicDevices = new string[0];
                 CaptureDevices = new MMDevice[0];
             }
@@ -67,11 +67,11 @@ namespace DEPOVoiceChat
 
                 capture.Start();
                 playback.Play();
-                Debug.Log("VoiceManager: Started capture on " + device.FriendlyName);
+                Debug.Log("[VoiceChat] VoiceManager: Started capture on " + device.FriendlyName);
             }
             catch (Exception e)
             {
-                Debug.LogError("VoiceManager: StartCapture failed: " + e.Message);
+                Debug.LogError("[VoiceChat] VoiceManager: StartCapture failed: " + e.Message);
                 StopCapture();
             }
         }
