@@ -7,7 +7,6 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Rendering.VirtualTexturing;
 using UnityEngine.SceneManagement;
 
 namespace DEPOVoiceChat
@@ -17,7 +16,6 @@ namespace DEPOVoiceChat
     {
         private bool showMenu = false;
         private Rect menuRect = new Rect(100, 100, 400, 340);
-        private bool lockPlayerControl = false;
         private bool micDropdownOpen = false;
         private bool streaming = false;
         private Thread udpThread;
@@ -58,9 +56,6 @@ namespace DEPOVoiceChat
             if (Input.GetKeyDown(KeyCode.RightAlt) && SceneManager.GetActiveScene().name != "menus")
             {
                 showMenu = !showMenu;
-                lockPlayerControl = showMenu;
-                Cursor.lockState = showMenu ? CursorLockMode.None : CursorLockMode.Locked;
-                Cursor.visible = showMenu;
                 if (!showMenu) micDropdownOpen = false;
             }
             if (Input.GetKeyDown(KeyCode.R))
@@ -73,24 +68,27 @@ namespace DEPOVoiceChat
         {
             if (streaming) return;
             streaming = true;
-            Debug.Log("[VoiceChat] Запрос на UDP отправку...");
+
+            udpClient = new UdpClient();
 
             await NetworkManager.SendMessage("UDP_REQUEST");
 
             bool ok = await NetworkManager.WaitForResponse("UDP_OK", 2000);
             if (!ok)
             {
-                Debug.LogError("[VoiceChat] UDP согласование не удалось.");
                 streaming = false;
                 return;
             }
 
-            Debug.Log("[VoiceChat] UDP согласование успешно, начинаем передачу звука.");
+            string localSteamID = SteamUser.GetSteamID().m_SteamID.ToString();
+            int localUdpPort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
+            await NetworkManager.SendMessage($"UDP_INFO|{localSteamID}|{localUdpPort}");
 
-            udpThread = new Thread(() => SendAudioLoop());
+            udpThread = new Thread(SendAudioLoop);
             udpThread.IsBackground = true;
             udpThread.Start();
         }
+
 
         private void StopVoiceStream()
         {
@@ -193,8 +191,7 @@ namespace DEPOVoiceChat
         {
             try
             {
-                udpClient = new UdpClient();
-                IPEndPoint endPoint = new IPEndPoint(Dns.GetHostAddresses("busiatep.ru")[0], 6001); 
+                IPEndPoint endPoint = new IPEndPoint(Dns.GetHostAddresses("busiatep.ru")[0], 6001);
 
                 using (var capture = new CSCore.SoundIn.WasapiCapture())
                 {
@@ -207,7 +204,7 @@ namespace DEPOVoiceChat
                     {
                         int read = waveSource.Read(buffer, 0, buffer.Length);
                         if (read > 0 && streaming)
-                            udpClient.Send(buffer, read, endPoint);
+                            udpClient.Send(buffer, read, endPoint); 
                     };
 
                     capture.Start();
@@ -224,6 +221,7 @@ namespace DEPOVoiceChat
                 Debug.LogError("[VoiceChat] Ошибка UDP-захвата: " + ex.Message);
             }
         }
+
 
         void OnGUI()
         {
@@ -293,9 +291,6 @@ namespace DEPOVoiceChat
             {
                 showMenu = false;
                 micDropdownOpen = false;
-                lockPlayerControl = false;
-                Cursor.lockState = CursorLockMode.Locked;
-                Cursor.visible = false;
                 SettingsManager.Save();
             }
 
@@ -320,16 +315,5 @@ namespace DEPOVoiceChat
                 await NetworkManager.SendMessage(msg);
             });
         }
-        private GUIStyle MakeSolidStyle(Color color)
-        {
-            Texture2D tex = new Texture2D(1, 1);
-            tex.SetPixel(0, 0, color);
-            tex.Apply();
-
-            GUIStyle style = new GUIStyle(GUI.skin.box);
-            style.normal.background = tex;
-            return style;
-        }
-
     }
 }

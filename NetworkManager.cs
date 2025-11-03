@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -9,55 +10,69 @@ namespace DEPOVoiceChat
 {
     public static class NetworkManager
     {
+        public enum ConnectionState { Disconnected, Connecting, Connected }
+        public static ConnectionState State { get; private set; } = ConnectionState.Disconnected;
+
         public static Dictionary<string, string> ClientList { get; private set; } = new Dictionary<string, string>();
         private static TcpClient tcpClient;
         private static NetworkStream stream;
         private static CancellationTokenSource cts;
         private static string serverIp = "busiatep.ru";
         private static int serverPort = 6000;
-        private static bool isConnecting = false;
         private static int heartbeatInterval = 5000;
         private static string lastMessage = "";
         private static readonly object msgLock = new object();
 
-        public static void Connect()
+        public static async Task<bool> Connect()
         {
-            if (isConnecting) return;
-            isConnecting = true;
+            if (State == ConnectionState.Connecting || State == ConnectionState.Connected)
+                return State == ConnectionState.Connected;
+
+            State = ConnectionState.Connecting;
+
+            if (tcpClient != null)
+            {
+                try
+                {
+                    cts?.Cancel();
+                    stream?.Close();
+                    tcpClient.Close();
+                }
+                catch { }
+                tcpClient = null;
+                stream = null;
+            }
+
             cts = new CancellationTokenSource();
 
-            Task.Run(async () =>
+            try
             {
-                while (!cts.Token.IsCancellationRequested)
+                tcpClient = new TcpClient();
+                await tcpClient.ConnectAsync(serverIp, serverPort);
+                stream = tcpClient.GetStream();
+                Debug.Log("[VoiceChat] TCP connected.");
+
+                string info = $"INFO|{Steamworks.SteamUser.GetSteamID().m_SteamID}|{Steamworks.SteamFriends.GetPersonaName()}|menus";
+                await SendMessage(info);
+
+                bool ok = await WaitForResponse("CLIENTS|", 2000);
+                if (!ok) 
                 {
-                    if (tcpClient == null || !tcpClient.Connected)
-                    {
-                        try
-                        {
-                            tcpClient?.Close();
-                            tcpClient = new TcpClient();
-                            await tcpClient.ConnectAsync(serverIp, serverPort);
-                            stream = tcpClient.GetStream();
-                            Debug.Log("[VoiceChat] NetworkManager: TCP connected.");
-
-                            try
-                            {
-                                string info = $"INFO|{Steamworks.SteamUser.GetSteamID().m_SteamID}|{Steamworks.SteamFriends.GetPersonaName()}|menus";
-                                await SendMessage(info);
-                            }
-                            catch (System.Exception ex)
-                            {
-                                Debug.LogError("[VoiceChat] Failed to send INFO: " + ex.Message);
-                            }
-
-                            _ = Task.Run(() => HeartbeatLoop(cts.Token));
-                            _ = Task.Run(() => ReceiveLoop(cts.Token));
-                        }
-                        catch (System.Exception ex) { Debug.LogError("[VoiceChat] TCP error: " + ex.Message); }
-                    }
-                    await Task.Delay(5000);
+                    Debug.LogWarning("[VoiceChat] Client list not received yet.");
                 }
-            });
+
+                _ = Task.Run(() => HeartbeatLoop(cts.Token));
+                _ = Task.Run(() => ReceiveLoop(cts.Token));
+
+                State = ConnectionState.Connected;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[VoiceChat] Connect error: " + ex.Message);
+                Disconnect();
+                return false;
+            }
         }
 
         public static async Task SendMessage(string msg)
@@ -82,27 +97,29 @@ namespace DEPOVoiceChat
         private static async Task ReceiveLoop(CancellationToken token)
         {
             byte[] buffer = new byte[4096];
-            while (!token.IsCancellationRequested)
+            try
             {
-                if (stream != null && stream.DataAvailable)
+                while (!token.IsCancellationRequested)
                 {
                     int read = await stream.ReadAsync(buffer, 0, buffer.Length, token);
-                    if (read > 0)
-                    {
-                        string message = Encoding.UTF8.GetString(buffer, 0, read);
-                        HandleServerMessage(message);
-                    }
+                    if (read == 0) break;
+                    string message = Encoding.UTF8.GetString(buffer, 0, read);
+                    HandleServerMessage(message);
                 }
-                else await Task.Delay(50);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[VoiceChat] ReceiveLoop error: " + ex.Message);
+            }
+            finally
+            {
+                Disconnect();
             }
         }
 
         private static void HandleServerMessage(string message)
         {
-            lock (msgLock)
-            {
-                lastMessage = message;
-            }
+            lock (msgLock) { lastMessage = message; }
 
             if (message.StartsWith("CLIENTS"))
             {
@@ -126,32 +143,28 @@ namespace DEPOVoiceChat
             while (waited < timeoutMs)
             {
                 string msg;
-                lock (msgLock)
-                {
-                    msg = lastMessage;
-                }
-                if (msg.Contains(expected))
-                    return true;
+                lock (msgLock) { msg = lastMessage; }
+                if (msg.Contains(expected)) return true;
 
                 await Task.Delay(100);
                 waited += 100;
             }
             return false;
         }
+
         public static void Disconnect()
         {
             try
             {
+                State = ConnectionState.Disconnected;
                 cts?.Cancel();
                 stream?.Close();
                 tcpClient?.Close();
                 tcpClient = null;
                 stream = null;
                 cts = null;
-                isConnecting = false;
             }
             catch { }
         }
-
     }
 }
