@@ -1,10 +1,6 @@
 ﻿using BepInEx;
-using CSCore;
 using Steamworks;
 using System;
-using System.Net;
-using System.Net.Sockets;
-using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -15,14 +11,10 @@ namespace DEPOVoiceChat
     public class Main : BaseUnityPlugin
     {
         private bool showMenu = false;
-        private Rect menuRect = new Rect(100, 100, 400, 340);
+        private Rect menuRect = new Rect(100, 100, 400, 500);
         private bool micDropdownOpen = false;
-        private bool streaming = false;
-        private Thread udpThread;
-        private UdpClient udpClient;
-        private Thread udpReceiveThread;
-        private bool receiving = false;
-        private UdpClient udpReceiver;
+
+        private string instanceId = null;
 
         void Awake()
         {
@@ -31,210 +23,79 @@ namespace DEPOVoiceChat
             VoiceManager.InitDevices();
             InitializeSteam();
             SceneManager.activeSceneChanged += OnSceneChanged;
+
+            instanceId = Guid.NewGuid().ToString();
+
+            Localization.SetLanguage(SettingsManager.CurrentSettings.language);
         }
 
-        void Start()
+        async void Start()
         {
-            NetworkManager.Connect();
+            bool connected = await NetworkManager.Connect();
+
+            if (!connected)
+            {
+                Debug.LogError("[VoiceChat] Не удалось подключиться к серверу!");
+                return;
+            }
+
             if (VoiceManager.MicDevices.Length > 0)
             {
                 int idx = SettingsManager.CurrentSettings.selectedMicIndex;
                 VoiceManager.StartCapture(idx);
             }
-            StartReceiving();
+            VoiceManager.StartReceiving(instanceId);
         }
 
         void OnDestroy()
         {
             NetworkManager.Disconnect();
             VoiceManager.StopCapture();
-            StopReceiving();
+            VoiceManager.StopReceiving();
+            VoiceManager.StopVoiceStream();
         }
 
         void Update()
         {
-            if (Input.GetKeyDown(KeyCode.RightAlt) && SceneManager.GetActiveScene().name != "menus")
+            if (SceneManager.GetActiveScene().name != "menus")
             {
-                showMenu = !showMenu;
-                if (!showMenu) micDropdownOpen = false;
-            }
-            if (Input.GetKeyDown(KeyCode.R))
-                StartVoiceStream();
-            if (Input.GetKeyUp(KeyCode.R))
-                StopVoiceStream();
-        }
-
-        private async void StartVoiceStream()
-        {
-            if (streaming) return;
-            streaming = true;
-
-            udpClient = new UdpClient();
-
-            await NetworkManager.SendMessage("UDP_REQUEST");
-
-            bool ok = await NetworkManager.WaitForResponse("UDP_OK", 2000);
-            if (!ok)
-            {
-                streaming = false;
-                return;
-            }
-
-            string localSteamID = SteamUser.GetSteamID().m_SteamID.ToString();
-            int localUdpPort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
-            await NetworkManager.SendMessage($"UDP_INFO|{localSteamID}|{localUdpPort}");
-
-            udpThread = new Thread(SendAudioLoop);
-            udpThread.IsBackground = true;
-            udpThread.Start();
-        }
-
-
-        private void StopVoiceStream()
-        {
-            if (!streaming) return;
-            streaming = false;
-
-            try
-            {
-                udpClient?.Close();
-                udpThread?.Join(500);
-                udpThread = null;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("[VoiceChat] Ошибка при остановке UDP-потока: " + ex.Message);
-            }
-        }
-
-        private void StartReceiving()
-        {
-            if (receiving) return;
-
-            try
-            {
-                udpReceiver = new UdpClient(6001); 
-                receiving = true;
-                udpReceiveThread = new Thread(ReceiveAudioLoop);
-                udpReceiveThread.IsBackground = true;
-                udpReceiveThread.Start();
-                Debug.Log("[VoiceChat] UDP приём звука запущен.");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("[VoiceChat] Не удалось запустить UDP приём: " + ex.Message);
-            }
-        }
-
-        private void StopReceiving()
-        {
-            try
-            {
-                receiving = false;
-                udpReceiver?.Close();
-                udpReceiveThread?.Join(500);
-                udpReceiveThread = null;
-                Debug.Log("[VoiceChat] UDP приём звука остановлен.");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("[VoiceChat] Ошибка при остановке UDP приёма: " + ex.Message);
-            }
-        }
-
-        private void ReceiveAudioLoop()
-        {
-            try
-            {
-                IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
-                var format = new CSCore.WaveFormat(48000, 16, 1); 
-
-                var buffer = new CSCore.Streams.WriteableBufferingSource(format)
+                if (Input.GetKeyDown((KeyCode)SettingsManager.CurrentSettings.menuToggleKey))
                 {
-                    FillWithZeros = false
-                };
+                    showMenu = !showMenu;
+                    if (!showMenu) micDropdownOpen = false;
+                }
 
-                using (var playback = new CSCore.SoundOut.WasapiOut())
+                if (SettingsManager.CurrentSettings.micMode == MicMode.PushToTalk)
                 {
-                    playback.Initialize(buffer.ToSampleSource().ToWaveSource(16));
-                    playback.Volume = SettingsManager.CurrentSettings.playersVolume;
-                    playback.Play();
-
-                    Debug.Log("[VoiceChat] UDP приём и воспроизведение звука запущены.");
-
-                    while (receiving)
-                    {
-                        byte[] data = udpReceiver.Receive(ref remoteEP);
-                        if (data != null && data.Length > 0)
-                        {
-                            buffer.Write(data, 0, data.Length);
-                        }
-
-                        Thread.Sleep(2);
-                    }
-
-                    playback.Stop();
+                    if (Input.GetKeyDown((KeyCode)SettingsManager.CurrentSettings.pushToTalkKey))
+                        VoiceManager.StartVoiceStream();
+                    if (Input.GetKeyUp((KeyCode)SettingsManager.CurrentSettings.pushToTalkKey))
+                        VoiceManager.StopVoiceStream();
                 }
             }
-            catch (SocketException)
-            {
-                if (receiving)
-                    Debug.LogError("[VoiceChat] UDP приём остановлен из-за ошибки сокета.");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("[VoiceChat] Ошибка UDP-приёма: " + ex.Message);
-            }
         }
-
-        private void SendAudioLoop()
-        {
-            try
-            {
-                IPEndPoint endPoint = new IPEndPoint(Dns.GetHostAddresses("busiatep.ru")[0], 6001);
-
-                using (var capture = new CSCore.SoundIn.WasapiCapture())
-                {
-                    capture.Initialize();
-                    var soundInSource = new CSCore.Streams.SoundInSource(capture) { FillWithZeros = false };
-                    var waveSource = soundInSource.ToSampleSource().ToWaveSource(16);
-
-                    byte[] buffer = new byte[2048];
-                    soundInSource.DataAvailable += (s, e) =>
-                    {
-                        int read = waveSource.Read(buffer, 0, buffer.Length);
-                        if (read > 0 && streaming)
-                            udpClient.Send(buffer, read, endPoint); 
-                    };
-
-                    capture.Start();
-                    Debug.Log("[VoiceChat] Захват микрофона и передача по UDP начались.");
-
-                    while (streaming)
-                        Thread.Sleep(20);
-
-                    capture.Stop();
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("[VoiceChat] Ошибка UDP-захвата: " + ex.Message);
-            }
-        }
-
 
         void OnGUI()
         {
-            if (showMenu)
-            {         
-                GUI.color = new Color(59, 59, 59, 1f);   
-                menuRect = GUI.Window(0, menuRect, DrawClientMenu, "VoiceChat Menu");             
+            if (!showMenu) return;
+
+            GUI.color = Color.white;
+
+            GUI.enabled = true;
+
+            menuRect = GUI.Window(0, menuRect, DrawClientMenu, Localization.T("voicechat_menu"));
+
+            if (menuRect.Contains(Event.current.mousePosition))
+            {
+                if (Event.current.type == EventType.MouseDown || Event.current.type == EventType.MouseUp || Event.current.type == EventType.MouseDrag)
+                {
+                    Event.current.Use();
+                }
             }
 
             if (micDropdownOpen)
                 DrawMicDropdown();
         }
-
 
         private void DrawMicDropdown()
         {
@@ -242,8 +103,8 @@ namespace DEPOVoiceChat
             float itemHeight = 24f;
             float height = Mathf.Min(itemHeight * VoiceManager.MicDevices.Length, 6 * itemHeight);
 
-            float dropdownX = menuRect.x - width; 
-            float dropdownY = menuRect.y + 190f;        
+            float dropdownX = menuRect.x - width;
+            float dropdownY = menuRect.y + 190f;
 
             GUI.Box(new Rect(dropdownX, dropdownY, width, height), "");
 
@@ -261,18 +122,38 @@ namespace DEPOVoiceChat
             }
         }
 
+        private System.Collections.IEnumerator WaitForKeyPressed(Action<KeyCode> callback)
+        {
+            bool keySet = false;
+            while (!keySet)
+            {
+                foreach (KeyCode kcode in Enum.GetValues(typeof(KeyCode)))
+                {
+                    if (Input.GetKeyDown(kcode))
+                    {
+                        callback(kcode);
+                        keySet = true;
+                        SettingsManager.Save();
+                        break;
+                    }
+                }
+                yield return null;
+            }
+        }
+
         private void DrawClientMenu(int windowID)
         {
             GUILayout.BeginVertical();
-            GUILayout.Label($"Connected clients: {NetworkManager.ClientList.Count}");
 
-            GUILayout.Label("Volume players:");
+            GUILayout.Label($"{Localization.T("connected_clients")} {NetworkManager.ClientList.Count}");
+
+            GUILayout.Label(Localization.T("volume_players"));
             SettingsManager.CurrentSettings.playersVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.playersVolume, 0f, 1f);
 
-            GUILayout.Label("Volume microphone:");
+            GUILayout.Label(Localization.T("volume_microphone"));
             SettingsManager.CurrentSettings.selfVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.selfVolume, 0f, 1f);
 
-            bool newHearSelf = GUILayout.Toggle(SettingsManager.CurrentSettings.hearSelf, "Hear myself");
+            bool newHearSelf = GUILayout.Toggle(SettingsManager.CurrentSettings.hearSelf, Localization.T("hear_myself"));
             if (newHearSelf != SettingsManager.CurrentSettings.hearSelf)
             {
                 SettingsManager.CurrentSettings.hearSelf = newHearSelf;
@@ -281,13 +162,62 @@ namespace DEPOVoiceChat
             }
 
             GUILayout.Space(8);
-            GUILayout.Label("Select microphone:");
+            GUILayout.Label(Localization.T("select_microphone"));
+
             if (GUILayout.Button(VoiceManager.MicDevices.Length > 0 ? VoiceManager.MicDevices[SettingsManager.CurrentSettings.selectedMicIndex] : "No microphone", GUILayout.Width(260)))
             {
                 micDropdownOpen = !micDropdownOpen;
             }
 
-            if (GUILayout.Button("Close"))
+            GUILayout.Space(8);
+            GUILayout.Label(Localization.T("keybinds"));
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Localization.T("open_close_menu"));
+            if (GUILayout.Button(SettingsManager.CurrentSettings.menuToggleKey.ToString(), GUILayout.Width(100)))
+            {
+                StartCoroutine(WaitForKeyPressed(k => SettingsManager.CurrentSettings.menuToggleKey = k));
+                SettingsManager.Save();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Localization.T("push_to_talk"));
+            if (GUILayout.Button(SettingsManager.CurrentSettings.pushToTalkKey.ToString(), GUILayout.Width(100)))
+            {
+                StartCoroutine(WaitForKeyPressed(k => SettingsManager.CurrentSettings.pushToTalkKey = k));
+                SettingsManager.Save();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(8);
+            GUILayout.Label(Localization.T("microphone_mode"));
+
+            string[] modes = { Localization.T("push_to_talk"), Localization.T("voice_activation") };
+            int selectedMode = (int)SettingsManager.CurrentSettings.micMode;
+            selectedMode = GUILayout.Toolbar(selectedMode, modes);
+            SettingsManager.CurrentSettings.micMode = (MicMode)selectedMode;
+
+            if (SettingsManager.CurrentSettings.micMode == MicMode.VoiceActivation)
+            {
+                GUILayout.Label($"{Localization.T("threshold")}: {SettingsManager.CurrentSettings.voiceThresholdDb} dB");
+                SettingsManager.CurrentSettings.voiceThresholdDb = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.voiceThresholdDb, -10f, 50f);
+            }
+
+            GUILayout.Space(8);
+            GUILayout.Label(Localization.T("language"));
+            string[] langs = { "English", "Русский" };
+            int langIdx = SettingsManager.CurrentSettings.language == "English" ? 0 : 1;
+
+            int newLangIdx = GUILayout.Toolbar(langIdx, langs);
+            if (newLangIdx != langIdx)
+            {
+                SettingsManager.CurrentSettings.language = langs[newLangIdx];
+                Localization.SetLanguage(SettingsManager.CurrentSettings.language);
+                SettingsManager.Save();
+            }
+
+            if (GUILayout.Button(Localization.T("close")))
             {
                 showMenu = false;
                 micDropdownOpen = false;
@@ -295,6 +225,7 @@ namespace DEPOVoiceChat
             }
 
             GUILayout.EndVertical();
+
             GUI.DragWindow();
         }
 

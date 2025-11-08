@@ -1,8 +1,14 @@
-﻿using UnityEngine;
-using System.IO;
+﻿using System.IO;
+using UnityEngine;
 
 namespace DEPOVoiceChat
 {
+    public enum MicMode
+    {
+        PushToTalk,
+        VoiceActivation
+    }
+
     [System.Serializable]
     public class VoiceSettings
     {
@@ -10,6 +16,14 @@ namespace DEPOVoiceChat
         public float playersVolume = 1f;
         public bool hearSelf = false;
         public int selectedMicIndex = 0;
+
+        public KeyCode menuToggleKey = KeyCode.RightAlt;
+        public KeyCode pushToTalkKey = KeyCode.R;
+
+        public MicMode micMode = MicMode.PushToTalk;
+        public float voiceThresholdDb = 5f;
+
+        public string language = "English";
     }
 
     public static class SettingsManager
@@ -29,6 +43,8 @@ namespace DEPOVoiceChat
                 }
                 catch { CurrentSettings = new VoiceSettings(); }
             }
+
+            Localization.SetLanguage(CurrentSettings.language);
         }
 
         public static void Save()
