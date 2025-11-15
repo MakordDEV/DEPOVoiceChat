@@ -7,15 +7,20 @@ using UnityEngine.SceneManagement;
 
 namespace DEPOVoiceChat
 {
-    [BepInPlugin("ru.makorddev.depovoicechat", "DEPO VoiceChat", "1.0.0")]
+    /// <summary>
+    /// main class handles plugin load, UI, voice capture, and network communication
+    /// </summary>
+    [BepInPlugin("ru.makorddev.depovoicechat", "Voicechat", "1.0.0")]
     public class Main : BaseUnityPlugin
     {
+        // menu visibility and microphone dropdown state
         private bool showMenu = false;
-        private Rect menuRect = new Rect(100, 100, 400, 500);
+        private Rect menuRect = new Rect(Screen.width - 500, 100, 400, 600);
         private bool micDropdownOpen = false;
 
-        private string instanceId = null;
-
+        /// <summary>
+        /// load settings, initialize devices and steam on plugin awake
+        /// </summary>
         void Awake()
         {
             Debug.Log("[VoiceChat] VoiceChat loaded.");
@@ -24,29 +29,44 @@ namespace DEPOVoiceChat
             InitializeSteam();
             SceneManager.activeSceneChanged += OnSceneChanged;
 
-            instanceId = Guid.NewGuid().ToString();
-
             Localization.SetLanguage(SettingsManager.CurrentSettings.language);
         }
 
+        /// <summary>
+        /// connect to server, start microphone capture and receive voice
+        /// handles reconnection
+        /// </summary>
         async void Start()
         {
+            VoiceManager.SetInstanceId(Guid.NewGuid().ToString());
             bool connected = await NetworkManager.Connect();
 
             if (!connected)
             {
-                Debug.LogError("[VoiceChat] Не удалось подключиться к серверу!");
+                Debug.LogError("[VoiceChat] Failed to connect to server");
                 return;
             }
 
+            // restart UDP when reconnect happens
+            NetworkManager.OnReconnected += () =>
+            {
+                VoiceManager.RestartUdp();
+            };
+
+            // start microphone capture if device exists
             if (VoiceManager.MicDevices.Length > 0)
             {
                 int idx = SettingsManager.CurrentSettings.selectedMicIndex;
                 VoiceManager.StartCapture(idx);
             }
-            VoiceManager.StartReceiving(instanceId);
+
+            VoiceManager.StartReceiving();
         }
 
+        /// <summary>
+        /// cleanup all resources on destroy
+        /// stop capturing and disconnect network
+        /// </summary>
         void OnDestroy()
         {
             NetworkManager.Disconnect();
@@ -55,6 +75,10 @@ namespace DEPOVoiceChat
             VoiceManager.StopVoiceStream();
         }
 
+        /// <summary>
+        /// handle input every frame
+        /// toggle menu and push-to-talk key handling
+        /// </summary>
         void Update()
         {
             if (SceneManager.GetActiveScene().name != "menus")
@@ -75,12 +99,15 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// draw the main UI window and dropdown if open
+        /// block clicks from passing through window
+        /// </summary>
         void OnGUI()
         {
             if (!showMenu) return;
 
             GUI.color = Color.white;
-
             GUI.enabled = true;
 
             menuRect = GUI.Window(0, menuRect, DrawClientMenu, Localization.T("voicechat_menu"));
@@ -97,6 +124,10 @@ namespace DEPOVoiceChat
                 DrawMicDropdown();
         }
 
+        /// <summary>
+        /// draw dropdown menu to select microphone
+        /// handles selection and restart capture if needed
+        /// </summary>
         private void DrawMicDropdown()
         {
             float width = 260f;
@@ -122,6 +153,10 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// yield until user presses a key for keybind
+        /// callback receives the pressed key
+        /// </summary>
         private System.Collections.IEnumerator WaitForKeyPressed(Action<KeyCode> callback)
         {
             bool keySet = false;
@@ -141,35 +176,58 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// draw client menu with all settings
+        /// includes volumes, microphone, keybinds, buffer, language
+        /// </summary>
         private void DrawClientMenu(int windowID)
         {
             GUILayout.BeginVertical();
 
             GUILayout.Label($"{Localization.T("connected_clients")} {NetworkManager.ClientList.Count}");
 
+            // player volume slider
             GUILayout.Label(Localization.T("volume_players"));
-            SettingsManager.CurrentSettings.playersVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.playersVolume, 0f, 1f);
+            float newPlayersVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.playersVolume, 0f, 1f);
+            if (Math.Abs(newPlayersVolume - SettingsManager.CurrentSettings.playersVolume) > 0.001f)
+            {
+                SettingsManager.CurrentSettings.playersVolume = newPlayersVolume;
+                VoiceManager.UpdatePlayersVolume(newPlayersVolume);
+                SettingsManager.Save();
+            }
 
+            // microphone volume slider
             GUILayout.Label(Localization.T("volume_microphone"));
-            SettingsManager.CurrentSettings.selfVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.selfVolume, 0f, 1f);
+            float newSelfVolume = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.selfVolume, 0f, 1f);
+            if (Math.Abs(newSelfVolume - SettingsManager.CurrentSettings.playersVolume) > 0.001f)
+            {
+                SettingsManager.CurrentSettings.selfVolume = newSelfVolume;
+                VoiceManager.UpdateSelfVolume(newSelfVolume);
+                SettingsManager.Save();
+            }
 
+            // hear myself toggle
             bool newHearSelf = GUILayout.Toggle(SettingsManager.CurrentSettings.hearSelf, Localization.T("hear_myself"));
             if (newHearSelf != SettingsManager.CurrentSettings.hearSelf)
             {
                 SettingsManager.CurrentSettings.hearSelf = newHearSelf;
                 VoiceManager.StopCapture();
                 if (newHearSelf) VoiceManager.StartCapture(SettingsManager.CurrentSettings.selectedMicIndex);
+                SettingsManager.Save();
             }
 
             GUILayout.Space(8);
-            GUILayout.Label(Localization.T("select_microphone"));
 
+            // microphone selection button
+            GUILayout.Label(Localization.T("select_microphone"));
             if (GUILayout.Button(VoiceManager.MicDevices.Length > 0 ? VoiceManager.MicDevices[SettingsManager.CurrentSettings.selectedMicIndex] : "No microphone", GUILayout.Width(260)))
             {
                 micDropdownOpen = !micDropdownOpen;
             }
 
             GUILayout.Space(8);
+
+            // keybinds section
             GUILayout.Label(Localization.T("keybinds"));
 
             GUILayout.BeginHorizontal();
@@ -191,23 +249,43 @@ namespace DEPOVoiceChat
             GUILayout.EndHorizontal();
 
             GUILayout.Space(8);
-            GUILayout.Label(Localization.T("microphone_mode"));
 
+            // microphone mode selection and threshold
+            GUILayout.Label(Localization.T("microphone_mode"));
             string[] modes = { Localization.T("push_to_talk"), Localization.T("voice_activation") };
             int selectedMode = (int)SettingsManager.CurrentSettings.micMode;
-            selectedMode = GUILayout.Toolbar(selectedMode, modes);
-            SettingsManager.CurrentSettings.micMode = (MicMode)selectedMode;
+            int newSelectedMode = GUILayout.Toolbar(selectedMode, modes);
+            if (newSelectedMode != selectedMode)
+            {
+                SettingsManager.CurrentSettings.micMode = (MicMode)newSelectedMode;
+                SettingsManager.Save();
+            }
 
             if (SettingsManager.CurrentSettings.micMode == MicMode.VoiceActivation)
             {
                 GUILayout.Label($"{Localization.T("threshold")}: {SettingsManager.CurrentSettings.voiceThresholdDb} dB");
                 SettingsManager.CurrentSettings.voiceThresholdDb = GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.voiceThresholdDb, -10f, 50f);
+                SettingsManager.Save();
             }
 
             GUILayout.Space(8);
+
+            // buffer size slider
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Localization.T("buffer_size"));
+            SettingsManager.CurrentSettings.bufferSizeMs = (int)GUILayout.HorizontalSlider(SettingsManager.CurrentSettings.bufferSizeMs, 1, 200);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label($"{Localization.T("buffer_current")} {SettingsManager.CurrentSettings.bufferSizeMs} ms");
+            SettingsManager.Save();
+
+            GUILayout.Space(8);
+
+            // language selection toolbar
             GUILayout.Label(Localization.T("language"));
-            string[] langs = { "English", "Русский" };
-            int langIdx = SettingsManager.CurrentSettings.language == "English" ? 0 : 1;
+            string[] langs = { "English", "Русский", "Español", "中文", "日本語" };
+            int langIdx = System.Array.IndexOf(langs, SettingsManager.CurrentSettings.language);
+            if (langIdx == -1) langIdx = 0;
 
             int newLangIdx = GUILayout.Toolbar(langIdx, langs);
             if (newLangIdx != langIdx)
@@ -217,6 +295,7 @@ namespace DEPOVoiceChat
                 SettingsManager.Save();
             }
 
+            // close menu button
             if (GUILayout.Button(Localization.T("close")))
             {
                 showMenu = false;
@@ -229,6 +308,10 @@ namespace DEPOVoiceChat
             GUI.DragWindow();
         }
 
+        /// <summary>
+        /// initialize Steam API for plugin
+        /// logs errors if initialization fails
+        /// </summary>
         private void InitializeSteam()
         {
             try
@@ -238,6 +321,10 @@ namespace DEPOVoiceChat
             catch { Debug.LogError("[VoiceChat] Error occured when SteamAPI init."); }
         }
 
+        /// <summary>
+        /// handle scene change events
+        /// sends info to server and adds dispatcher if missing
+        /// </summary>
         private void OnSceneChanged(Scene oldScene, Scene newScene)
         {
             Task.Run(async () =>
@@ -245,6 +332,13 @@ namespace DEPOVoiceChat
                 string msg = $"INFO|{SteamUser.GetSteamID().m_SteamID}|{SteamFriends.GetPersonaName()}|{newScene.name}";
                 await NetworkManager.SendMessage(msg);
             });
+
+            if (GameObject.Find("Dispatcher") != null)
+                return;
+
+            var dispatcherObj = new GameObject("Dispatcher");
+            dispatcherObj.AddComponent<UnityMainThreadDispatcher>();
+            DontDestroyOnLoad(dispatcherObj);
         }
     }
 }

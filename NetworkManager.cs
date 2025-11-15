@@ -9,14 +9,26 @@ using UnityEngine.SceneManagement;
 
 namespace DEPOVoiceChat
 {
+    /// <summary>
+    /// handles tcp connection, message sending, receiving and client list management
+    /// manages reconnecting automatically if connection is lost
+    /// </summary>
     public static class NetworkManager
     {
         public enum ConnectionState { Disconnected, Connecting, Connected }
+
+        /// <summary>
+        /// current state of tcp connection
+        /// </summary>
         public static ConnectionState State { get; private set; } = ConnectionState.Disconnected;
 
+        /// <summary>
+        /// stores clients in format steamid:name
+        /// </summary>
         public static Dictionary<string, string> ClientList { get; private set; } = new Dictionary<string, string>();
         public static TcpClient Client => tcpClient;
         public static NetworkStream Stream => stream;
+        public static event Action OnReconnected;
 
         private static TcpClient tcpClient;
         private static NetworkStream stream;
@@ -32,15 +44,17 @@ namespace DEPOVoiceChat
 
         private static bool reconnecting = false;
 
+        /// <summary>
+        /// connects to tcp server and starts heartbeat and receive loops
+        /// sends initial client info and waits for clients list response
+        /// </summary>
         public static async Task<bool> Connect()
         {
             if (State == ConnectionState.Connecting || State == ConnectionState.Connected)
                 return State == ConnectionState.Connected;
 
             State = ConnectionState.Connecting;
-
             Cleanup();
-
             cts = new CancellationTokenSource();
 
             try
@@ -54,14 +68,12 @@ namespace DEPOVoiceChat
                 await SendMessage(info);
 
                 bool ok = await WaitForResponse("CLIENTS|", 2000);
-                if (!ok)
-                    Debug.LogWarning("[VoiceChat] Client list not received yet.");
+                if (!ok) Debug.LogWarning("[VoiceChat] Client list not received yet.");
 
                 _ = Task.Run(() => HeartbeatLoop(cts.Token));
                 _ = Task.Run(() => ReceiveLoop(cts.Token));
 
                 State = ConnectionState.Connected;
-
                 StartMonitor();
                 return true;
             }
@@ -74,6 +86,9 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// continuously checks connection state and starts reconnect if needed
+        /// </summary>
         private static void StartMonitor()
         {
             monitorCts?.Cancel();
@@ -93,6 +108,11 @@ namespace DEPOVoiceChat
             }, monitorCts.Token);
         }
 
+        /// <summary>
+        /// loop that tries to reconnect periodically until connection succeeds
+        /// increases delay gradually but caps it at 10s
+        /// invokes OnReconnected when connection restored
+        /// </summary>
         private static void StartReconnectLoop()
         {
             if (reconnecting) return;
@@ -110,14 +130,20 @@ namespace DEPOVoiceChat
                     {
                         reconnecting = false;
                         Debug.Log("[VoiceChat] Reconnected successfully.");
+                        OnReconnected?.Invoke();
                         return;
                     }
 
-                    delay = Math.Min(delay + 3000, 10000); 
+                    delay = Math.Min(delay + 3000, 10000);
                 }
                 reconnecting = false;
             });
         }
+
+        /// <summary>
+        /// sends a tcp message if connected
+        /// starts reconnect if send fails
+        /// </summary>
         public static async Task SendMessage(string msg)
         {
             if (tcpClient != null && tcpClient.Connected)
@@ -137,6 +163,9 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// sends periodic heartbeat messages to keep connection alive
+        /// </summary>
         private static async Task HeartbeatLoop(CancellationToken token)
         {
             while (!token.IsCancellationRequested)
@@ -148,6 +177,10 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// continuously reads messages from tcp stream
+        /// handles disconnects and reconnects automatically
+        /// </summary>
         private static async Task ReceiveLoop(CancellationToken token)
         {
             byte[] buffer = new byte[4096];
@@ -174,6 +207,10 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// parses messages from server
+        /// updates client list or triggers playback for speaking clients
+        /// </summary>
         private static void HandleServerMessage(string message)
         {
             lock (msgLock) { lastMessage = message; }
@@ -195,19 +232,22 @@ namespace DEPOVoiceChat
             else if (message.StartsWith("SPEAKING|"))
             {
                 string[] parts = message.Split('|');
-                if (parts.Length == 4)
+                if (parts.Length == 5)
                 {
                     string scene = parts[1];
                     string name = parts[2];
                     string steamId = parts[3];
-                    Debug.Log($"[VoiceChat] SPEAKING: {name} ({steamId}) в сцене {scene}");
+                    Debug.Log($"[VoiceChat] SPEAKING: {name} ({steamId}) in scene {scene}");
 
                     if (SceneManager.GetActiveScene().name == scene)
-                        VoiceManager.AllowScenePlayback(scene);
+                        VoiceManager.AllowScenePlayback(scene, name);
                 }
             }
         }
 
+        /// <summary>
+        /// waits until a specific message appears or timeout elapses
+        /// </summary>
         public static async Task<bool> WaitForResponse(string expected, int timeoutMs)
         {
             int waited = 0;
@@ -223,6 +263,9 @@ namespace DEPOVoiceChat
             return false;
         }
 
+        /// <summary>
+        /// stops connection, cancels loops and disposes tcp client and stream
+        /// </summary>
         public static void Disconnect()
         {
             try
@@ -239,6 +282,10 @@ namespace DEPOVoiceChat
             catch { }
         }
 
+        /// <summary>
+        /// cancels any existing tasks and closes streams
+        /// prepares for a fresh connection
+        /// </summary>
         private static void Cleanup()
         {
             try

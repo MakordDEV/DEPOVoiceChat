@@ -311,6 +311,8 @@
     <Compile Include="NetworkManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SettingsManager.cs" />
+    <Compile Include="SpeakingIndicator.cs" />
+    <Compile Include="UnityMainThreadDispatcher.cs" />
     <Compile Include="VoiceManager.cs" />
   </ItemGroup>
   <ItemGroup>

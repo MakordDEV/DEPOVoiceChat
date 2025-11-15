@@ -2,30 +2,163 @@
 
 namespace DEPOVoiceChat
 {
+    /// <summary>
+    /// handles multi-language localization for the voice chat
+    /// provides translations for english, russian, spanish, chinese, and japanese
+    /// </summary>
     public static class Localization
     {
-        public enum Language { English, Russian }
+        /// <summary>
+        /// supported languages
+        /// </summary>
+        public enum Language { English, Russian, Spanish, Chinese, Japanese }
 
+        /// <summary>
+        /// current language used for localization
+        /// </summary>
         public static Language CurrentLanguage { get; private set; } = Language.English;
 
+        /// <summary>
+        /// dictionary of keys and their translations for each language
+        /// contains all ui strings and tips
+        /// </summary>
         private static Dictionary<string, Dictionary<Language, string>> texts = new Dictionary<string, Dictionary<Language, string>>()
         {
-            { "connected_clients", new Dictionary<Language, string> { { Language.English, "Connected clients:" }, { Language.Russian, "Подключено клиентов:" } } },
-            { "volume_players", new Dictionary<Language, string> { { Language.English, "Volume players" }, { Language.Russian, "Громкость игроков" } } },
-            { "volume_microphone", new Dictionary<Language, string> { { Language.English, "Volume microphone" }, { Language.Russian, "Громкость микрофона" } } },
-            { "hear_myself", new Dictionary<Language, string> { { Language.English, "Hear myself" }, { Language.Russian, "Слушать себя" } } },
-            { "select_microphone", new Dictionary<Language, string> { { Language.English, "Select microphone" }, { Language.Russian, "Выбрать микрофон" } } },
-            { "keybinds", new Dictionary<Language, string> { { Language.English, "Keybinds:" }, { Language.Russian, "Назначение клавиш:" } } },
-            { "open_close_menu", new Dictionary<Language, string> { { Language.English, "Open/Close menu" }, { Language.Russian, "Открыть/Закрыть меню" } } },
-            { "push_to_talk", new Dictionary<Language, string> { { Language.English, "Push-to-talk" }, { Language.Russian, "Нажать для речи" } } },
-            { "close", new Dictionary<Language, string> { { Language.English, "Close" }, { Language.Russian, "Закрыть" } } },
-            { "microphone_mode", new Dictionary<Language, string> { { Language.English, "Microphone mode:" }, { Language.Russian, "Режим микрофона:" } } },
-            { "threshold", new Dictionary<Language, string> { { Language.English, "Voice threshold" }, { Language.Russian, "Порог громкости" } } },
-            { "voicechat_menu", new Dictionary<Language, string> { { Language.English, "VoiceChat Menu" }, { Language.Russian, "Меню VoiceChat" } } },
-            { "voice_activation", new Dictionary<Language, string> { { Language.English, "Voice Activation" }, { Language.Russian, "Активация голосом" } } },
-            { "language", new Dictionary<Language, string> { { Language.English, "Language" }, { Language.Russian, "Язык" } } }
+            // displays number of connected clients
+            { "connected_clients", new Dictionary<Language, string> {
+                { Language.English, "Connected clients:" },
+                { Language.Russian, "Подключено клиентов:" },
+                { Language.Spanish, "Clientes conectados:" },
+                { Language.Chinese, "已连接的客户端：" },
+                { Language.Japanese, "接続中のクライアント：" }
+            }},
+            // controls for player volume
+            { "volume_players", new Dictionary<Language, string> {
+                { Language.English, "Volume players" },
+                { Language.Russian, "Громкость игроков" },
+                { Language.Spanish, "Volumen de jugadores" },
+                { Language.Chinese, "玩家音量" },
+                { Language.Japanese, "プレイヤーの音量" }
+            }},
+            // controls for microphone volume
+            { "volume_microphone", new Dictionary<Language, string> {
+                { Language.English, "Volume microphone" },
+                { Language.Russian, "Громкость микрофона" },
+                { Language.Spanish, "Volumen del micrófono" },
+                { Language.Chinese, "麦克风音量" },
+                { Language.Japanese, "マイクの音量" }
+            }},
+            // option to hear own voice
+            { "hear_myself", new Dictionary<Language, string> {
+                { Language.English, "Hear myself" },
+                { Language.Russian, "Слушать себя" },
+                { Language.Spanish, "Escucharme a mí mismo" },
+                { Language.Chinese, "监听自己" },
+                { Language.Japanese, "自分の声を聞く" }
+            }},
+            // selects which microphone to use
+            { "select_microphone", new Dictionary<Language, string> {
+                { Language.English, "Select microphone" },
+                { Language.Russian, "Выбрать микрофон" },
+                { Language.Spanish, "Seleccionar micrófono" },
+                { Language.Chinese, "选择麦克风" },
+                { Language.Japanese, "マイクを選択" }
+            }},
+            // keybinding section title
+            { "keybinds", new Dictionary<Language, string> {
+                { Language.English, "Keybinds:" },
+                { Language.Russian, "Назначение клавиш:" },
+                { Language.Spanish, "Asignación de teclas:" },
+                { Language.Chinese, "按键绑定：" },
+                { Language.Japanese, "キー割り当て：" }
+            }},
+            // button label for opening or closing menu
+            { "open_close_menu", new Dictionary<Language, string> {
+                { Language.English, "Open/Close menu" },
+                { Language.Russian, "Открыть/Закрыть меню" },
+                { Language.Spanish, "Abrir/Cerrar menú" },
+                { Language.Chinese, "打开/关闭菜单" },
+                { Language.Japanese, "メニューを開閉" }
+            }},
+            // button label for push-to-talk key
+            { "push_to_talk", new Dictionary<Language, string> {
+                { Language.English, "Push-to-talk" },
+                { Language.Russian, "Нажать для речи" },
+                { Language.Spanish, "Pulsar para hablar" },
+                { Language.Chinese, "按键说话" },
+                { Language.Japanese, "プッシュ・トゥ・トーク" }
+            }},
+            // general close button
+            { "close", new Dictionary<Language, string> {
+                { Language.English, "Close" },
+                { Language.Russian, "Закрыть" },
+                { Language.Spanish, "Cerrar" },
+                { Language.Chinese, "关闭" },
+                { Language.Japanese, "閉じる" }
+            }},
+            // label for selecting microphone mode
+            { "microphone_mode", new Dictionary<Language, string> {
+                { Language.English, "Microphone mode:" },
+                { Language.Russian, "Режим микрофона:" },
+                { Language.Spanish, "Modo micrófono:" },
+                { Language.Chinese, "麦克风模式：" },
+                { Language.Japanese, "マイクモード：" }
+            }},
+            // threshold setting for voice activation
+            { "threshold", new Dictionary<Language, string> {
+                { Language.English, "Voice threshold" },
+                { Language.Russian, "Порог громкости" },
+                { Language.Spanish, "Umbral de voz" },
+                { Language.Chinese, "语音激活阈值" },
+                { Language.Japanese, "音声認識しきい値" }
+            }},
+            // main voicechat menu title
+            { "voicechat_menu", new Dictionary<Language, string> {
+                { Language.English, "Voicechat Menu" },
+                { Language.Russian, "Меню Voicechat" },
+                { Language.Spanish, "Menú de Voicechat" },
+                { Language.Chinese, "语音聊天菜单" },
+                { Language.Japanese, "ボイスチャットメニュー" }
+            }},
+            // option for voice activation
+            { "voice_activation", new Dictionary<Language, string> {
+                { Language.English, "Voice Activation" },
+                { Language.Russian, "Активация голосом" },
+                { Language.Spanish, "Activación por voz" },
+                { Language.Chinese, "语音激活" },
+                { Language.Japanese, "音声アクティベーション" }
+            }},
+            // buffer size label
+            { "buffer_size", new Dictionary<Language, string> {
+                { Language.English, "Buffer size (ms)" },
+                { Language.Russian, "Размер буфера (мс)" },
+                { Language.Spanish, "Tamaño del búfer (ms)" },
+                { Language.Chinese, "缓冲区大小（毫秒）" },
+                { Language.Japanese, "バッファサイズ（ms）" }
+            }},
+            // label showing current buffer
+            { "buffer_current", new Dictionary<Language, string> {
+                { Language.English, "Current buffer:" },
+                { Language.Russian, "Текущий буфер:" },
+                { Language.Spanish, "Búfer actual:" },
+                { Language.Chinese, "当前缓冲：" },
+                { Language.Japanese, "現在のバッファ：" }
+            }},
+            // language selection label
+            { "language", new Dictionary<Language, string> {
+                { Language.English, "Language" },
+                { Language.Russian, "Язык" },
+                { Language.Spanish, "Idioma" },
+                { Language.Chinese, "语言" },
+                { Language.Japanese, "言語" }
+            }},
         };
 
+        /// <summary>
+        /// returns the localized string for a key based on current language
+        /// returns key itself if no translation is found
+        /// </summary>
+        /// <param name="key">text identifier</param>
         public static string T(string key)
         {
             if (texts.TryGetValue(key, out var dict))
@@ -36,10 +169,22 @@ namespace DEPOVoiceChat
             return key;
         }
 
+        /// <summary>
+        /// sets current language using string name
+        /// defaults to english if name is unknown
+        /// </summary>
+        /// <param name="lang">language name like "English", "Русский", "Español", "中文", "日本語"</param>
         public static void SetLanguage(string lang)
         {
-            if (System.Enum.TryParse<Language>(lang, true, out var parsed))
-                CurrentLanguage = parsed;
+            switch (lang)
+            {
+                case "English": CurrentLanguage = Language.English; break;
+                case "Русский": CurrentLanguage = Language.Russian; break;
+                case "Español": CurrentLanguage = Language.Spanish; break;
+                case "中文": CurrentLanguage = Language.Chinese; break;
+                case "日本語": CurrentLanguage = Language.Japanese; break;
+                default: CurrentLanguage = Language.English; break;
+            }
         }
     }
 }

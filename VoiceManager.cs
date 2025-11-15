@@ -5,6 +5,7 @@ using CSCore.SoundOut;
 using CSCore.Streams;
 using Steamworks;
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -12,10 +13,13 @@ using UnityEngine;
 
 namespace DEPOVoiceChat
 {
+    /// <summary>
+    /// manages microphone capture, playback, streaming via udp, and speaking indicators
+    /// </summary>
     public static class VoiceManager
     {
-        public static string[] MicDevices { get; private set; } = new string[0];
-        public static MMDevice[] CaptureDevices { get; private set; } = new MMDevice[0];
+        public static string[] MicDevices { get; private set; } = Array.Empty<string>();
+        public static MMDevice[] CaptureDevices { get; private set; } = Array.Empty<MMDevice>();
 
         private static WasapiCapture capture;
         private static SoundInSource soundInSource;
@@ -24,6 +28,7 @@ namespace DEPOVoiceChat
         private static MMDeviceEnumerator deviceEnum;
         private static string allowedScene;
         private static readonly object lockObj = new object();
+        public static readonly List<string> speaking = new List<string>();
         private static bool streaming = false;
 
         private static int udpReceivePort;
@@ -31,16 +36,80 @@ namespace DEPOVoiceChat
         private static bool receiving = false;
         private static UdpClient udpClient;
         private static IPEndPoint serverEndPoint;
+        private static Thread keepAliveThreadSend;
+        private static bool keepAliveSendRunning = false;
+        private static WasapiOut playersPlayback;
         private static string instanceId;
 
+        /// <summary>
+        /// removes player from speaking list safely
+        /// </summary>
+        public static void RemoveFromSpeaking(string name)
+        {
+            lock (lockObj)
+                speaking.Remove(name);
+        }
+
+        /// <summary>
+        /// sends udp punch packets to server to open NAT mapping
+        /// </summary>
+        private static void SendUdpPunch()
+        {
+            try
+            {
+                byte[] punch = { 0x00 };
+                for (int i = 0; i < 3; i++)
+                {
+                    udpClient?.Send(punch, punch.Length, serverEndPoint);
+                    Thread.Sleep(50);
+                }
+                Debug.Log("[VoiceChat] UDP punch packets sent to server to open NAT mapping.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[VoiceChat] UDP punch failed: " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// starts background thread to keep udp connection alive
+        /// </summary>
+        private static void StartUdpKeepAliveSend()
+        {
+            if (keepAliveSendRunning) return;
+
+            keepAliveSendRunning = true;
+            keepAliveThreadSend = new Thread(() =>
+            {
+                byte[] ka = { 0xFF };
+                while (keepAliveSendRunning)
+                {
+                    try
+                    {
+                        udpClient?.Send(ka, ka.Length, serverEndPoint);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning("[VoiceChat] KeepAliveSend: " + ex.Message);
+                    }
+                    Thread.Sleep(2000);
+                }
+            })
+            { IsBackground = true };
+            keepAliveThreadSend.Start();
+        }
+
+        /// <summary>
+        /// scans available audio capture devices and fills lists
+        /// </summary>
         public static void InitDevices()
         {
             try
             {
                 deviceEnum = new MMDeviceEnumerator();
                 var devs = deviceEnum.EnumAudioEndpoints(DataFlow.Capture, DeviceState.Active);
-                var names = new System.Collections.Generic.List<string>();
-                var mmDevices = new System.Collections.Generic.List<MMDevice>();
+                var names = new List<string>();
+                var mmDevices = new List<MMDevice>();
 
                 foreach (var d in devs)
                 {
@@ -54,11 +123,14 @@ namespace DEPOVoiceChat
             catch (Exception e)
             {
                 Debug.LogError("[VoiceChat] CSCore: InitDevices failed: " + e.Message);
-                MicDevices = new string[0];
-                CaptureDevices = new MMDevice[0];
+                MicDevices = Array.Empty<string>();
+                CaptureDevices = Array.Empty<MMDevice>();
             }
         }
 
+        /// <summary>
+        /// starts local microphone capture and self playback
+        /// </summary>
         public static void StartCapture(int deviceIndex)
         {
             StopCapture();
@@ -90,10 +162,15 @@ namespace DEPOVoiceChat
             }
         }
 
+        /// <summary>
+        /// stops and disposes microphone capture and playback
+        /// </summary>
         public static void StopCapture()
         {
-            try { capture?.Stop(); capture?.Dispose(); } catch { }
-            try { playback?.Stop(); playback?.Dispose(); } catch { }
+            try { capture?.Stop(); } catch { }
+            try { playback?.Stop(); } catch { }
+            try { capture?.Dispose(); } catch { }
+            try { playback?.Dispose(); } catch { }
             try { soundInSource?.Dispose(); } catch { }
             try { waveSource?.Dispose(); } catch { }
 
@@ -103,20 +180,29 @@ namespace DEPOVoiceChat
             waveSource = null;
         }
 
+        /// <summary>
+        /// sets unique instance id for this voice client
+        /// </summary>
+        public static void SetInstanceId(string instanceid) => instanceId = instanceid;
+
+        /// <summary>
+        /// starts sending microphone audio via udp
+        /// handles reconnection and punch packets
+        /// </summary>
         public static async void StartVoiceStream()
         {
-            if (streaming) return;
+            StopVoiceStream();
             streaming = true;
 
             try
             {
                 if (NetworkManager.State != NetworkManager.ConnectionState.Connected)
                 {
-                    Debug.LogWarning("[VoiceChat] TCP-соединение отсутствует, попытка реконнекта...");
+                    Debug.LogWarning("[VoiceChat] TCP connection missing, trying reconnect...");
                     bool reconnected = await NetworkManager.Connect();
                     if (!reconnected)
                     {
-                        Debug.LogError("[VoiceChat] Не удалось восстановить TCP-соединение.");
+                        Debug.LogError("[VoiceChat] failed to reconnect tcp.");
                         streaming = false;
                         return;
                     }
@@ -126,158 +212,170 @@ namespace DEPOVoiceChat
                 {
                     udpClient = new UdpClient(0);
                     udpReceivePort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
-                    Debug.Log($"[VoiceChat] (StartVoiceStream) UDP клиент создан на {udpReceivePort}");
+                    udpClient.Client.ReceiveTimeout = 1000;
+                    udpClient.Client.SendTimeout = 1000;
+                    Debug.Log($"[VoiceChat] udp client created on {udpReceivePort}");
                 }
                 else
                 {
                     udpReceivePort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
-                    Debug.Log($"[VoiceChat] (StartVoiceStream) Reusing UDP client on {udpReceivePort}");
+                    Debug.Log($"[VoiceChat] reusing udp client on {udpReceivePort}");
                 }
 
                 var addrs = Dns.GetHostAddresses("busiatep.ru");
                 serverEndPoint = new IPEndPoint(addrs[0], 6001);
 
-                await NetworkManager.SendMessage("UDP_REQUEST");
-
-                bool ok = await NetworkManager.WaitForResponse("UDP_OK", 3000);
-                if (!ok)
-                {
-                    Debug.LogWarning("[VoiceChat] Сервер не ответил на UDP_REQUEST, отмена запуска микрофона.");
-                    streaming = false;
-                    return;
-                }
+                StartUdpKeepAliveSend();
+                SendUdpPunch();
 
                 string localSteamID = SteamUser.GetSteamID().m_SteamID.ToString();
                 await NetworkManager.SendMessage($"UDP_INFO|{localSteamID}|{udpReceivePort}|{instanceId}");
-                Debug.Log($"[VoiceChat] Отправлена информация о UDP: {localSteamID}:{udpReceivePort}|{instanceId}");
+                Debug.Log($"[VoiceChat] sent udp info: {localSteamID}:{udpReceivePort}|{instanceId}");
 
                 Thread sendThread = new Thread(SendAudioLoop) { IsBackground = true };
                 sendThread.Start();
 
-                Debug.Log("[VoiceChat] Поток передачи звука запущен.");
+                Debug.Log("[VoiceChat] audio send thread started.");
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] Ошибка при запуске VoiceStream: " + ex);
+                Debug.LogError("[VoiceChat] error starting voice stream: " + ex);
                 streaming = false;
             }
         }
 
+        /// <summary>
+        /// stops sending microphone audio
+        /// </summary>
         public static void StopVoiceStream()
         {
             if (!streaming) return;
             streaming = false;
-            Debug.Log("[VoiceChat] Стрим остановлен.");
+
+            keepAliveSendRunning = false;
+            keepAliveThreadSend?.Join();
+            keepAliveThreadSend = null;
+
+            Debug.Log("[VoiceChat] stream stopped.");
         }
 
-        public static void StartReceiving(string instanceid_)
+        /// <summary>
+        /// starts receiving audio via udp and playback
+        /// </summary>
+        public static async void StartReceiving()
         {
             if (receiving) return;
-
-            instanceId = instanceid_;
 
             try
             {
                 if (udpClient == null)
-                {
                     udpClient = new UdpClient(0);
-                }
+
                 udpReceivePort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
                 receiving = true;
 
-                string steamID = SteamUser.GetSteamID().m_SteamID.ToString();
-                _ = NetworkManager.SendMessage($"UDP_INFO|{steamID}|{udpReceivePort}|{instanceId}");
+                udpClient.Client.ReceiveTimeout = 1000;
+                udpClient.Client.SendTimeout = 1000;
 
-                udpReceiveThread = new Thread(ReceiveAudioLoop);
-                udpReceiveThread.IsBackground = true;
+                string steamID = SteamUser.GetSteamID().m_SteamID.ToString();
+                await NetworkManager.SendMessage($"UDP_INFO|{steamID}|{udpReceivePort}|{instanceId}");
+
+                SendUdpPunch();
+
+                udpReceiveThread = new Thread(ReceiveAudioLoop) { IsBackground = true };
                 udpReceiveThread.Start();
 
-                Debug.Log($"[VoiceChat] UDP приём звука запущен на порту {udpReceivePort}");
+                Debug.Log($"[VoiceChat] udp audio receive started on port {udpReceivePort}");
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] Не удалось запустить UDP приём: " + ex.Message);
+                Debug.LogError("[VoiceChat] failed to start udp receive: " + ex.Message);
             }
         }
 
+        /// <summary>
+        /// stops udp audio receiving
+        /// </summary>
         public static void StopReceiving()
         {
             try
             {
                 receiving = false;
-                try { udpClient?.Close(); } catch { }
-                udpClient = null;
-
-                udpReceiveThread?.Join(500);
+                udpReceiveThread?.Join();
                 udpReceiveThread = null;
-                Debug.Log("[VoiceChat] UDP приём звука остановлен.");
+                Debug.Log("[VoiceChat] udp receive stopped.");
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] Ошибка при остановке UDP приёма: " + ex.Message);
+                Debug.LogError("[VoiceChat] error stopping udp receive: " + ex.Message);
             }
         }
 
+        /// <summary>
+        /// main loop to process incoming audio
+        /// writes to buffer and triggers speaking indicators
+        /// </summary>
         private static void ReceiveAudioLoop()
         {
+            IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
+            var format = new CSCore.WaveFormat(48000, 16, 1);
+            int bufferSize = format.BytesPerSecond * SettingsManager.CurrentSettings.bufferSizeMs / 1000;
+            var bufferSource = new WriteableBufferingSource(format, bufferSize) { FillWithZeros = true };
+
             try
             {
-                IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
-                var format = new CSCore.WaveFormat(48000, 16, 1);
-                var bufferSource = new CSCore.Streams.WriteableBufferingSource(format)
+                playersPlayback = new WasapiOut();
+                playersPlayback.Initialize(bufferSource);
+                playersPlayback.Volume = SettingsManager.CurrentSettings.playersVolume;
+                playersPlayback.Play();
+
+                SendUdpPunch();
+
+                while (receiving)
                 {
-                    FillWithZeros = true
-                };
-
-                using (var playback = new CSCore.SoundOut.WasapiOut())
-                {
-                    playback.Initialize(bufferSource);
-                    playback.Volume = SettingsManager.CurrentSettings.playersVolume;
-                    playback.Play();
-
-                    Debug.Log("[VoiceChat] Ожидание UDP-пакетов...");
-
-                    while (receiving)
+                    byte[] data = null;
+                    try
                     {
-                        try
-                        {
-                            if (udpClient == null)
-                            {
-                                Thread.Sleep(50);
-                                continue;
-                            }
-
-                            byte[] data = udpClient.Receive(ref remoteEP);
-                            if (data != null && data.Length > 0)
-                            {
-                                int bytesPerSample = format.BitsPerSample / 8;
-                                int len = (data.Length / bytesPerSample) * bytesPerSample;
-                                if (len > 0)
-                                    bufferSource.Write(data, 0, len);
-                            }
-                        }
-                        catch (SocketException se)
-                        {
-                            if (receiving)
-                                Debug.LogWarning("[VoiceChat] ReceiveAudioLoop SocketException: " + se.Message);
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogError("[VoiceChat] ReceiveAudioLoop: " + ex.Message);
-                        }
-
-                        Thread.Sleep(1);
+                        data = udpClient.Receive(ref remoteEP);
+                    }
+                    catch (SocketException se)
+                    {
+                        if (se.SocketErrorCode != SocketError.TimedOut)
+                            Debug.LogWarning("[VoiceChat] ReceiveAudioLoop SocketException: " + se.Message);
+                        continue;
                     }
 
-                    playback.Stop();
+                    if (data != null && data.Length > 0)
+                    {
+                        bufferSource.Write(data, 0, data.Length);
+
+                        UnityMainThreadDispatcher.Enqueue(() =>
+                        {
+                            lock (lockObj)
+                            {
+                                foreach (string name in speaking)
+                                    SpeakingIndicator.OnPlayerSpeaking(name);
+                            }
+                        });
+                    }
+                    Thread.Sleep(1);
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] ReceiveAudioLoop fatal: " + ex.Message);
+                Debug.LogError("[VoiceChat] ReceiveAudioLoop fatal: " + ex);
+            }
+            finally
+            {
+                try { playersPlayback?.Stop(); } catch { }
+                try { playersPlayback?.Dispose(); } catch { }
             }
         }
 
+        /// <summary>
+        /// main loop to capture microphone audio and send via udp
+        /// handles voice activation and buffer
+        /// </summary>
         private static void SendAudioLoop()
         {
             try
@@ -288,69 +386,109 @@ namespace DEPOVoiceChat
                     serverEndPoint = new IPEndPoint(addrs[0], 6001);
                 }
 
-                var targetFormat = new CSCore.WaveFormat(48000, 16, 1);
-
-                using (var capture = new CSCore.SoundIn.WasapiCapture(false, CSCore.CoreAudioAPI.AudioClientShareMode.Shared, 100))
+                using (var capture = new WasapiCapture())
                 {
                     capture.Initialize();
-                    var source = new CSCore.Streams.SoundInSource(capture) { FillWithZeros = false };
-
-                    var converted = source
-                        .ChangeSampleRate(targetFormat.SampleRate)
-                        .ToSampleSource()
-                        .ToMono()
-                        .ToWaveSource(16);
-
-                    capture.Start();
-                    Debug.Log("[VoiceChat] Захват микрофона и передача по UDP начались.");
-
-                    byte[] buffer = new byte[targetFormat.BytesPerSecond / 10];
-                    int read;
-
-                    while (streaming)
+                    using (var source = new SoundInSource(capture) { FillWithZeros = false })
                     {
-                        read = converted.Read(buffer, 0, buffer.Length);
+                        var targetFormat = new CSCore.WaveFormat(48000, 16, 1);
+                        var converted = source
+                            .ToSampleSource()
+                            .ToMono()
+                            .ChangeSampleRate(targetFormat.SampleRate)
+                            .ToWaveSource(16);
 
-                        bool sendData = true;
+                        capture.Start();
+                        byte[] buffer = new byte[converted.WaveFormat.BytesPerSecond * SettingsManager.CurrentSettings.bufferSizeMs / 1000];
 
-                        if (SettingsManager.CurrentSettings.micMode == MicMode.VoiceActivation)
+                        while (streaming)
                         {
-                            float rms = 0f;
-                            for (int i = 0; i < read; i += 2)
+                            int read = converted.Read(buffer, 0, buffer.Length);
+                            bool sendData = true;
+
+                            if (SettingsManager.CurrentSettings.micMode == MicMode.VoiceActivation)
                             {
-                                short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
-                                float f = sample / 32768f;
-                                rms += f * f;
+                                float rms = 0f;
+                                for (int i = 0; i < read; i += 2)
+                                {
+                                    short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
+                                    float f = sample / 32768f;
+                                    rms += f * f;
+                                }
+                                if (read > 0)
+                                    rms = Mathf.Sqrt(rms / (read / 2));
+
+                                float db = 20f * Mathf.Log10(Mathf.Max(rms, 0.0001f));
+                                sendData = db >= SettingsManager.CurrentSettings.voiceThresholdDb;
                             }
-                            rms = Mathf.Sqrt(rms / (read / 2));
-                            float db = 20f * Mathf.Log10(Mathf.Max(rms, 0.0001f));
 
-                            sendData = db >= SettingsManager.CurrentSettings.voiceThresholdDb;
+                            if (sendData && read > 0)
+                                udpClient?.Send(buffer, read, serverEndPoint);
+
+                            Thread.Sleep(10);
                         }
-
-                        if (sendData && read > 0 && udpClient != null)
-                            udpClient.Send(buffer, read, serverEndPoint);
-
-                        Thread.Sleep(10);
                     }
-
-                    capture.Stop();
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] Ошибка UDP-захвата: " + ex.Message);
+                Debug.LogError("[VoiceChat] udp capture error: " + ex.Message);
             }
         }
 
-        public static void AllowScenePlayback(string scene)
+        /// <summary>
+        /// stops udp receiving and restarts it
+        /// </summary>
+        public static void RestartUdp()
+        {
+            StopReceiving();
+
+            keepAliveSendRunning = false;
+            keepAliveThreadSend?.Join();
+            keepAliveThreadSend = null;
+
+            try { udpClient?.Close(); } catch { }
+            udpClient = null;
+
+            receiving = false;
+
+            StartReceiving();
+        }
+
+        /// <summary>
+        /// updates volume of all other players
+        /// </summary>
+        public static void UpdatePlayersVolume(float volume)
+        {
+            if (playersPlayback != null)
+                playersPlayback.Volume = volume;
+        }
+
+        /// <summary>
+        /// updates self playback volume
+        /// </summary>
+        public static void UpdateSelfVolume(float volume)
+        {
+            if (playback != null)
+                playback.Volume = volume;
+        }
+
+        /// <summary>
+        /// allows playback for a specific scene and adds player to speaking list
+        /// </summary>
+        public static void AllowScenePlayback(string scene, string name)
         {
             lock (lockObj)
             {
                 allowedScene = scene;
+                if (!speaking.Contains(name))
+                    speaking.Add(name);
             }
         }
 
+        /// <summary>
+        /// checks if playback is allowed for the current scene
+        /// </summary>
         public static bool IsAllowed(string scene)
         {
             return allowedScene != null && allowedScene == scene;
