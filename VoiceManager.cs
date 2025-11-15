@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace DEPOVoiceChat
@@ -53,7 +54,7 @@ namespace DEPOVoiceChat
         /// <summary>
         /// sends udp punch packets to server to open NAT mapping
         /// </summary>
-        private static void SendUdpPunch()
+        private static async void SendUdpPunch()
         {
             try
             {
@@ -61,7 +62,7 @@ namespace DEPOVoiceChat
                 for (int i = 0; i < 3; i++)
                 {
                     udpClient?.Send(punch, punch.Length, serverEndPoint);
-                    Thread.Sleep(50);
+                    await Task.Delay(50);
                 }
                 Debug.Log("[VoiceChat] UDP punch packets sent to server to open NAT mapping.");
             }
@@ -79,7 +80,7 @@ namespace DEPOVoiceChat
             if (keepAliveSendRunning) return;
 
             keepAliveSendRunning = true;
-            keepAliveThreadSend = new Thread(() =>
+            keepAliveThreadSend = new Thread(async() =>
             {
                 byte[] ka = { 0xFF };
                 while (keepAliveSendRunning)
@@ -92,7 +93,7 @@ namespace DEPOVoiceChat
                     {
                         Debug.LogWarning("[VoiceChat] KeepAliveSend: " + ex.Message);
                     }
-                    Thread.Sleep(2000);
+                    await Task.Delay(2000);
                 }
             })
             { IsBackground = true };
@@ -253,7 +254,7 @@ namespace DEPOVoiceChat
             streaming = false;
 
             keepAliveSendRunning = false;
-            keepAliveThreadSend?.Join();
+            Task.Run(() => keepAliveThreadSend.Join());
             keepAliveThreadSend = null;
 
             Debug.Log("[VoiceChat] stream stopped.");
@@ -301,7 +302,7 @@ namespace DEPOVoiceChat
             try
             {
                 receiving = false;
-                udpReceiveThread?.Join();
+                Task.Run(() => keepAliveThreadSend.Join());
                 udpReceiveThread = null;
                 Debug.Log("[VoiceChat] udp receive stopped.");
             }
@@ -315,7 +316,7 @@ namespace DEPOVoiceChat
         /// main loop to process incoming audio
         /// writes to buffer and triggers speaking indicators
         /// </summary>
-        private static void ReceiveAudioLoop()
+        private static async void ReceiveAudioLoop()
         {
             IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
             var format = new CSCore.WaveFormat(48000, 16, 1);
@@ -358,7 +359,7 @@ namespace DEPOVoiceChat
                             }
                         });
                     }
-                    Thread.Sleep(1);
+                    await Task.Delay(1);
                 }
             }
             catch (Exception ex)
@@ -376,7 +377,7 @@ namespace DEPOVoiceChat
         /// main loop to capture microphone audio and send via udp
         /// handles voice activation and buffer
         /// </summary>
-        private static void SendAudioLoop()
+        private static async void SendAudioLoop()
         {
             try
             {
@@ -425,7 +426,7 @@ namespace DEPOVoiceChat
                             if (sendData && read > 0)
                                 udpClient?.Send(buffer, read, serverEndPoint);
 
-                            Thread.Sleep(10);
+                            await Task.Delay(10);
                         }
                     }
                 }
@@ -444,7 +445,7 @@ namespace DEPOVoiceChat
             StopReceiving();
 
             keepAliveSendRunning = false;
-            keepAliveThreadSend?.Join();
+            Task.Run(() => keepAliveThreadSend.Join());
             keepAliveThreadSend = null;
 
             try { udpClient?.Close(); } catch { }

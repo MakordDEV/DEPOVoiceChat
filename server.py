@@ -1,13 +1,9 @@
 import datetime
-import faulthandler
 import os
 import socket
-import sys
 import threading
 import time
 import traceback
-import wave
-import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,7 +14,8 @@ TCP_PORT = 6000
 UDP_PORT = 6001
 HEARTBEAT_TIMEOUT = 11  
 
-clients = {}  # {steam_id: {"conn": conn, "name": str, "scene": str, "udp_addr": (ip, port), "audio_buffer": bytes, "stt_timer": Timer, "last_heartbeat": float}}
+clients = {} 
+udp_map = {} 
 lock = threading.Lock()
 
 def broadcast_clients():
@@ -32,7 +29,6 @@ def broadcast_clients():
         except:
             pass
 
-
 def remove_client(steam_id):
     with lock:
         if steam_id in clients:
@@ -44,7 +40,6 @@ def remove_client(steam_id):
             print(f"[INFO] Клиент {clients[steam_id]['name']} отключен.")
             clients.pop(steam_id)
     broadcast_clients()
-
 
 def handle_tcp(conn, addr):
     print(f"[INFO] Новый TCP клиент: {addr}")
@@ -68,7 +63,6 @@ def handle_tcp(conn, addr):
                             "scene": parts[3],
                             "udp_addr": None,
                             "audio_buffer": b"",
-                            "stt_timer": None,
                             "last_heartbeat": time.time()
                         }
 
@@ -88,13 +82,24 @@ def handle_tcp(conn, addr):
 
             elif msg.startswith("UDP_INFO|"):
                 parts = msg.split("|")
-                if len(parts) == 3:
+                if len(parts) >= 3:
                     steam_id = parts[1]
-                    udp_port = int(parts[2])
+                    try:
+                        udp_port = int(parts[2])
+                    except:
+                        continue
+
+                    instance_id = parts[3] if len(parts) >= 4 else None
+
                     with lock:
                         if steam_id in clients:
-                            clients[steam_id]["udp_addr"] = (addr[0], udp_port)
-                            log(f"[UDP] Привязка UDP: {steam_id} → {(addr[0], udp_port)}")
+                            client_ip = addr[0]
+                            clients[steam_id]["udp_addr"] = (client_ip, udp_port)
+                            clients[steam_id]["instance_id"] = instance_id
+                            clients[steam_id]["udp_last_seen"] = time.time()
+                            udp_map[(client_ip, udp_port)] = steam_id
+
+                            log(f"[UDP] Привязка UDP: {steam_id}/{instance_id} → {(client_ip, udp_port)}")
 
             else:
                 if steam_id:
@@ -119,7 +124,6 @@ def handle_tcp(conn, addr):
             except:
                 pass
 
-
 def heartbeat_check():
     while True:
         now = time.time()
@@ -143,60 +147,56 @@ def heartbeat_check():
             broadcast_clients()
         time.sleep(2)
 
-
 def log(msg):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {msg}")
 
-def trigger_stt(steam_id):
-    start_time = time.time()
-    log(f"[STT] Triggered for {steam_id}")
-
+def handle_udp_packet(udp_sock, data, addr):
     with lock:
+        steam_id = udp_map.get(addr)
+
+        if not steam_id:
+            candidates = [
+                (sid, info) for sid, info in clients.items()
+                if info.get("udp_addr") and info["udp_addr"][0] == addr[0]
+            ]
+            if candidates:
+                candidates.sort(key=lambda x: x[1].get("udp_last_seen", 0), reverse=True)
+                sid, info = candidates[0]
+                if time.time() - info.get("udp_last_seen", 0) < 60:
+                    steam_id = sid
+                    old_addr = info["udp_addr"]
+                    info["udp_addr"] = addr
+                    info["udp_last_seen"] = time.time()
+                    udp_map.pop(old_addr, None)
+                    udp_map[addr] = steam_id
+                    log(f"[UDP] (fallback) обновлена привязка {steam_id}/{info.get('instance_id')} → {addr}")
+
+        if not steam_id:
+            log(f"[UDP] ⚠ Не удалось определить steam_id для {addr}")
+            return
+
         info = clients.get(steam_id)
         if not info:
-            log(f"[STT] {steam_id}: client info not found")
+            log(f"[UDP] internal: clients[{steam_id}] not found")
             return
-        audio_data = info.get("audio_buffer", b"")
-        info["audio_buffer"] = b""  # сбрасываем буфер после чтения
-        info["stt_timer"] = None
 
-    if not audio_data:
-        log(f"[STT] {steam_id}: no audio data — skipping STT")
-        return
+        info["udp_last_seen"] = time.time()
+        instance_id = info.get("instance_id")
 
-    log(f"[STT] {steam_id}: collected {len(audio_data)} bytes ({len(audio_data)/96000:.2f}s)")
+    with lock:
+        other_clients = [
+            inf["udp_addr"]
+            for sid, inf in clients.items()
+            if inf.get("udp_addr") and sid != steam_id
+        ]
 
-    filename = f"{steam_id}_{int(time.time())}.wav"
-    try:
-        with wave.open(filename, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(48000)
-            wf.writeframes(audio_data)
-        log(f"[STT] {steam_id}: WAV file saved as {filename}")
-    except Exception as e:
-        log(f"[STT ERROR] {steam_id}: write failed: {e}")
-        return
-
-    files = {"file": open(filename, "rb")}
-    data = {"model": "stt-openai/whisper-v3-turbo", "response_format": "json"}
-    headers = {"Authorization": f"Bearer {API_KEY}"}
-
-    try:
-        log(f"[STT] {steam_id}: sending {len(audio_data)} bytes to STT API...")
-        resp = requests.post("https://api.vsegpt.ru/v1/audio/transcriptions",
-                             headers=headers, files=files, data=data, timeout=20)
-        resp_json = resp.json()
-        log(f"[STT] {steam_id}: response: {resp_json}")
-    except Exception as e:
-        log(f"[STT ERROR] {steam_id}: STT request failed: {e}")
-    finally:
-        files["file"].close()
+    for other_addr in other_clients:
         try:
-            os.remove(filename)
-            log(f"[STT] {steam_id}: temp file deleted ({time.time() - start_time:.2f}s total)")
+            udp_sock.sendto(data, other_addr)
         except Exception as e:
-            log(f"[STT ERROR] {steam_id}: delete failed: {e}")
+            log(f"[UDP ERROR] to {other_addr}: {e}")
+
+    log(f"[UDP] {steam_id}/{instance_id}: {len(data)} bytes from {addr} → {len(other_clients)} clients")
 
 
 def udp_thread():
@@ -206,58 +206,10 @@ def udp_thread():
 
     while True:
         try:
-            data, addr = udp_sock.recvfrom(4096)
-            packet_len = len(data)
-            recv_time = time.time()
-            steam_id = None
-            other_clients = []
-
-            with lock:
-                steam_id = None
-                for sid, info in clients.items():
-                    if info["udp_addr"] == addr:
-                        steam_id = sid
-                        break
-
-            if not steam_id:
-                log(f"[UDP] ⚠ Не удалось определить steam_id для {addr}")
-                continue  
-
-            if steam_id:
-                info = clients[steam_id]
-
-                if info.get("stt_timer"):
-                    info["stt_timer"].cancel()
-                    info["stt_timer"] = None
-
-                if len(info["audio_buffer"]) == 0:
-                    log(f"[UDP] {steam_id}: start new capture session")
-
-                info["audio_buffer"] += data
-                cur_len = len(info["audio_buffer"])
-                log(f"[UDP] {steam_id}: +{packet_len} bytes (total={cur_len}, from={addr})")
-
-                t = threading.Timer(2.0, trigger_stt, args=(steam_id,))
-                info["stt_timer"] = t
-                t.daemon = True
-                t.start()
-
-                other_clients = [
-                    inf["udp_addr"] for sid, inf in clients.items()
-                    if inf.get("udp_addr") and inf["udp_addr"] != addr
-                ]
-
-            for other_addr in other_clients:
-                try:
-                    udp_sock.sendto(data, other_addr)
-                    log(f"[UDP→] {packet_len} bytes from {addr} → {other_addr}")
-                except Exception as e:
-                    log(f"[UDP ERROR] to {other_addr}: {e}")
-
+            data, addr = udp_sock.recvfrom(8192)
+            handle_udp_packet(udp_sock, data, addr)
         except Exception as e:
             log(f"[UDP EXCEPTION] {type(e).__name__}: {e}")
-
-            
 
 def tcp_server():
     tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
