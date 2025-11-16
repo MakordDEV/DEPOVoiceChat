@@ -22,7 +22,7 @@ namespace DEPOVoiceChat
         /// dictionary of keys and their translations for each language
         /// contains all ui strings and tips
         /// </summary>
-        private static Dictionary<string, Dictionary<Language, string>> texts = new Dictionary<string, Dictionary<Language, string>>()
+        private static readonly Dictionary<string, Dictionary<Language, string>> texts = new Dictionary<string, Dictionary<Language, string>>()
         {
             // displays number of connected clients
             { "connected_clients", new Dictionary<Language, string> {
@@ -115,7 +115,7 @@ namespace DEPOVoiceChat
             // main voicechat menu title
             { "voicechat_menu", new Dictionary<Language, string> {
                 { Language.English, "Voicechat Menu" },
-                { Language.Russian, "Меню Voicechat" },
+                { Language.Russian, "Меню голосового чата" },
                 { Language.Spanish, "Menú de Voicechat" },
                 { Language.Chinese, "语音聊天菜单" },
                 { Language.Japanese, "ボイスチャットメニュー" }
@@ -151,6 +151,14 @@ namespace DEPOVoiceChat
                 { Language.Spanish, "Idioma" },
                 { Language.Chinese, "语言" },
                 { Language.Japanese, "言語" }
+            }},
+            // speaking text
+            { "speaking", new Dictionary<Language, string> {
+                { Language.English, "Speaking..." },
+                { Language.Russian, "Говорит..." },
+                { Language.Spanish, "Hablando..." },
+                { Language.Chinese, "正在讲话..." },    
+                { Language.Japanese, "話しています..." }  
             }},
         };
 

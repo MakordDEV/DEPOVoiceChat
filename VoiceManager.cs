@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using UnityEngine;
 
 namespace DEPOVoiceChat
@@ -28,7 +29,7 @@ namespace DEPOVoiceChat
         private static WasapiOut playback;
         private static MMDeviceEnumerator deviceEnum;
         private static string allowedScene;
-        private static readonly object lockObj = new object();
+        private static readonly object lockObj = new object(); 
         public static readonly List<string> speaking = new List<string>();
         private static bool streaming = false;
 
@@ -36,7 +37,7 @@ namespace DEPOVoiceChat
         private static Thread udpReceiveThread;
         private static bool receiving = false;
         private static UdpClient udpClient;
-        private static IPEndPoint serverEndPoint;
+
         private static Thread keepAliveThreadSend;
         private static bool keepAliveSendRunning = false;
         private static WasapiOut playersPlayback;
@@ -58,13 +59,10 @@ namespace DEPOVoiceChat
         {
             try
             {
+                if (streaming) return;
                 byte[] punch = { 0x00 };
-                for (int i = 0; i < 3; i++)
-                {
-                    udpClient?.Send(punch, punch.Length, serverEndPoint);
-                    await Task.Delay(50);
-                }
-                Debug.Log("[VoiceChat] UDP punch packets sent to server to open NAT mapping.");
+                udpClient?.Send(punch, punch.Length, Main.ServerEP);
+                await Task.Delay(500);
             }
             catch (Exception e)
             {
@@ -80,20 +78,12 @@ namespace DEPOVoiceChat
             if (keepAliveSendRunning) return;
 
             keepAliveSendRunning = true;
-            keepAliveThreadSend = new Thread(async() =>
+            keepAliveThreadSend = new Thread(async () =>
             {
-                byte[] ka = { 0xFF };
                 while (keepAliveSendRunning)
                 {
-                    try
-                    {
-                        udpClient?.Send(ka, ka.Length, serverEndPoint);
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.LogWarning("[VoiceChat] KeepAliveSend: " + ex.Message);
-                    }
-                    await Task.Delay(2000);
+                    await Task.Delay(20000);
+                    try { SendUdpPunch(); } catch (Exception ex) { Debug.LogWarning("[VoiceChat] KeepAliveSend: " + ex.Message); }
                 }
             })
             { IsBackground = true };
@@ -134,13 +124,13 @@ namespace DEPOVoiceChat
         /// </summary>
         public static void StartCapture(int deviceIndex)
         {
-            StopCapture();
-
-            if (!SettingsManager.CurrentSettings.hearSelf || CaptureDevices.Length == 0) return;
-            if (deviceIndex < 0 || deviceIndex >= CaptureDevices.Length) return;
-
             try
             {
+                StopCapture();
+
+                if (!SettingsManager.CurrentSettings.hearSelf || CaptureDevices.Length == 0) return;
+                if (deviceIndex < 0 || deviceIndex >= CaptureDevices.Length) return;
+
                 var device = CaptureDevices[deviceIndex];
                 capture = new WasapiCapture() { Device = device };
                 capture.Initialize();
@@ -154,7 +144,6 @@ namespace DEPOVoiceChat
 
                 capture.Start();
                 playback.Play();
-                Debug.Log("[VoiceChat] VoiceManager: Started capture on " + device.FriendlyName);
             }
             catch (Exception e)
             {
@@ -215,28 +204,25 @@ namespace DEPOVoiceChat
                     udpReceivePort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
                     udpClient.Client.ReceiveTimeout = 1000;
                     udpClient.Client.SendTimeout = 1000;
-                    Debug.Log($"[VoiceChat] udp client created on {udpReceivePort}");
                 }
                 else
                 {
                     udpReceivePort = ((IPEndPoint)udpClient.Client.LocalEndPoint).Port;
-                    Debug.Log($"[VoiceChat] reusing udp client on {udpReceivePort}");
                 }
 
-                var addrs = Dns.GetHostAddresses("busiatep.ru");
-                serverEndPoint = new IPEndPoint(addrs[0], 6001);
-
-                StartUdpKeepAliveSend();
-                SendUdpPunch();
+                await NetworkManager.SendMessage("SPEAK_REQUEST");
+                if (!await NetworkManager.WaitForResponse("SPEAK_OK", 500))
+                {
+                    Debug.LogError("[VoiceChat] failed to request speak.");
+                    streaming = false;
+                    return;
+                }
 
                 string localSteamID = SteamUser.GetSteamID().m_SteamID.ToString();
                 await NetworkManager.SendMessage($"UDP_INFO|{localSteamID}|{udpReceivePort}|{instanceId}");
-                Debug.Log($"[VoiceChat] sent udp info: {localSteamID}:{udpReceivePort}|{instanceId}");
 
                 Thread sendThread = new Thread(SendAudioLoop) { IsBackground = true };
                 sendThread.Start();
-
-                Debug.Log("[VoiceChat] audio send thread started.");
             }
             catch (Exception ex)
             {
@@ -252,10 +238,6 @@ namespace DEPOVoiceChat
         {
             if (!streaming) return;
             streaming = false;
-
-            keepAliveSendRunning = false;
-            Task.Run(() => keepAliveThreadSend.Join());
-            keepAliveThreadSend = null;
 
             Debug.Log("[VoiceChat] stream stopped.");
         }
@@ -281,12 +263,10 @@ namespace DEPOVoiceChat
                 string steamID = SteamUser.GetSteamID().m_SteamID.ToString();
                 await NetworkManager.SendMessage($"UDP_INFO|{steamID}|{udpReceivePort}|{instanceId}");
 
-                SendUdpPunch();
+                StartUdpKeepAliveSend();
 
                 udpReceiveThread = new Thread(ReceiveAudioLoop) { IsBackground = true };
                 udpReceiveThread.Start();
-
-                Debug.Log($"[VoiceChat] udp audio receive started on port {udpReceivePort}");
             }
             catch (Exception ex)
             {
@@ -302,9 +282,22 @@ namespace DEPOVoiceChat
             try
             {
                 receiving = false;
-                Task.Run(() => keepAliveThreadSend.Join());
-                udpReceiveThread = null;
-                Debug.Log("[VoiceChat] udp receive stopped.");
+
+                keepAliveSendRunning = false;
+
+                if (keepAliveThreadSend != null)
+                {
+                    try { keepAliveThreadSend.Join(500); } catch { }
+                    keepAliveThreadSend = null;
+                }
+
+                try { udpClient?.Close(); } catch { }
+
+                if (udpReceiveThread != null)
+                {
+                    try { udpReceiveThread.Join(500); } catch { }
+                    udpReceiveThread = null;
+                }
             }
             catch (Exception ex)
             {
@@ -330,36 +323,42 @@ namespace DEPOVoiceChat
                 playersPlayback.Volume = SettingsManager.CurrentSettings.playersVolume;
                 playersPlayback.Play();
 
-                SendUdpPunch();
-
                 while (receiving)
                 {
-                    byte[] data = null;
                     try
                     {
-                        data = udpClient.Receive(ref remoteEP);
-                    }
-                    catch (SocketException se)
-                    {
-                        if (se.SocketErrorCode != SocketError.TimedOut)
-                            Debug.LogWarning("[VoiceChat] ReceiveAudioLoop SocketException: " + se.Message);
-                        continue;
-                    }
-
-                    if (data != null && data.Length > 0)
-                    {
-                        bufferSource.Write(data, 0, data.Length);
-
-                        UnityMainThreadDispatcher.Enqueue(() =>
+                        byte[] data = udpClient.Receive(ref remoteEP);
+                        if (data != null && data.Length > 0)
                         {
-                            lock (lockObj)
+                            bufferSource.Write(data, 0, data.Length);
+
+                            UnityMainThreadDispatcher.Enqueue(() =>
                             {
-                                foreach (string name in speaking)
-                                    SpeakingIndicator.OnPlayerSpeaking(name);
-                            }
-                        });
+                                lock (lockObj)
+                                {
+                                    Debug.Log($"[VoiceChat] Speaking loop1: {string.Join(", ", speaking)}");
+                                    foreach (string name in speaking)
+                                    {
+                                        Debug.Log($"[VoiceChat] Speaking loop: {name}");
+                                        SpeakingIndicator.OnPlayerSpeaking(name);
+                                    }
+                                }
+                            });
+                        }
+                        await Task.Delay(1);
                     }
-                    await Task.Delay(1);
+                    catch (SocketException ex)
+                    {
+                        if (ex.SocketErrorCode == SocketError.TimedOut)
+                        {
+                            continue;
+                        }
+                        Debug.LogWarning("[VoiceChat] Receive error: " + ex.Message);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        break;
+                    }
                 }
             }
             catch (Exception ex)
@@ -381,16 +380,10 @@ namespace DEPOVoiceChat
         {
             try
             {
-                if (serverEndPoint == null)
+                using (var micCapture = new WasapiCapture())
                 {
-                    var addrs = Dns.GetHostAddresses("busiatep.ru");
-                    serverEndPoint = new IPEndPoint(addrs[0], 6001);
-                }
-
-                using (var capture = new WasapiCapture())
-                {
-                    capture.Initialize();
-                    using (var source = new SoundInSource(capture) { FillWithZeros = false })
+                    micCapture.Initialize();
+                    using (var source = new SoundInSource(micCapture) { FillWithZeros = false })
                     {
                         var targetFormat = new CSCore.WaveFormat(48000, 16, 1);
                         var converted = source
@@ -399,8 +392,10 @@ namespace DEPOVoiceChat
                             .ChangeSampleRate(targetFormat.SampleRate)
                             .ToWaveSource(16);
 
-                        capture.Start();
-                        byte[] buffer = new byte[converted.WaveFormat.BytesPerSecond * SettingsManager.CurrentSettings.bufferSizeMs / 1000];
+                        micCapture.Start();
+
+                        byte[] buffer = new byte[converted.WaveFormat.BytesPerSecond *
+                            SettingsManager.CurrentSettings.bufferSizeMs / 1000];
 
                         while (streaming)
                         {
@@ -412,6 +407,7 @@ namespace DEPOVoiceChat
                                 float rms = 0f;
                                 for (int i = 0; i < read; i += 2)
                                 {
+                                    if (i + 1 >= read) break;
                                     short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
                                     float f = sample / 32768f;
                                     rms += f * f;
@@ -424,7 +420,7 @@ namespace DEPOVoiceChat
                             }
 
                             if (sendData && read > 0)
-                                udpClient?.Send(buffer, read, serverEndPoint);
+                                udpClient?.Send(buffer, read, Main.ServerEP);
 
                             await Task.Delay(10);
                         }
@@ -445,8 +441,12 @@ namespace DEPOVoiceChat
             StopReceiving();
 
             keepAliveSendRunning = false;
-            Task.Run(() => keepAliveThreadSend.Join());
-            keepAliveThreadSend = null;
+
+            if (keepAliveThreadSend != null)
+            {
+                try { keepAliveThreadSend.Join(500); } catch { }
+                keepAliveThreadSend = null;
+            }
 
             try { udpClient?.Close(); } catch { }
             udpClient = null;
@@ -479,6 +479,7 @@ namespace DEPOVoiceChat
         /// </summary>
         public static void AllowScenePlayback(string scene, string name)
         {
+            if (scene == "menus") return;
             lock (lockObj)
             {
                 allowedScene = scene;

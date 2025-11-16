@@ -25,12 +25,12 @@ namespace DEPOVoiceChat
         public int selectedMicIndex = 0;
 
         // keybindings for menu and push-to-talk
-        public KeyCode menuToggleKey = KeyCode.RightAlt;
+        public KeyCode menuToggleKey = KeyCode.Q;
         public KeyCode pushToTalkKey = KeyCode.R;
 
         // microphone mode and voice threshold
         public MicMode micMode = MicMode.PushToTalk;
-        public float voiceThresholdDb = 5f;
+        public float voiceThresholdDb = -5f;
 
         // interface language
         public string language = "English";
@@ -45,7 +45,7 @@ namespace DEPOVoiceChat
     public static class SettingsManager
     {
         // full path to the settings file in persistent storage
-        private static string settingsPath = Path.Combine(Application.persistentDataPath, "voicechat_settings.json");
+        private static readonly string settingsPath = Path.Combine(Application.persistentDataPath, "voicechat_settings.json");
 
         // current loaded settings
         public static VoiceSettings CurrentSettings { get; private set; } = new VoiceSettings();
@@ -86,7 +86,7 @@ namespace DEPOVoiceChat
             }
             catch
             {
-                // ignore any errors during save
+                // ignored
             }
         }
     }

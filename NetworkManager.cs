@@ -35,9 +35,9 @@ namespace DEPOVoiceChat
         private static CancellationTokenSource cts;
         private static CancellationTokenSource monitorCts;
 
-        private static string serverIp = "busiatep.ru";
-        private static int serverPort = 6000;
-        private static int heartbeatInterval = 5000;
+        private static readonly string serverIp = "busiatep.ru";
+        private static readonly int serverPort = 6000;
+        private static readonly int heartbeatInterval = 5000;
 
         private static string lastMessage = "";
         private static readonly object msgLock = new object();
@@ -68,7 +68,6 @@ namespace DEPOVoiceChat
                 await SendMessage(info);
 
                 bool ok = await WaitForResponse("CLIENTS|", 2000);
-                if (!ok) Debug.LogWarning("[VoiceChat] Client list not received yet.");
 
                 _ = Task.Run(() => HeartbeatLoop(cts.Token));
                 _ = Task.Run(() => ReceiveLoop(cts.Token));
@@ -129,7 +128,6 @@ namespace DEPOVoiceChat
                     if (ok)
                     {
                         reconnecting = false;
-                        Debug.Log("[VoiceChat] Reconnected successfully.");
                         OnReconnected?.Invoke();
                         return;
                     }
@@ -227,17 +225,14 @@ namespace DEPOVoiceChat
                         if (kv.Length == 2) ClientList[kv[0]] = kv[1];
                     }
                 }
-                Debug.Log("[VoiceChat] Client list updated: " + ClientList.Count);
             }
             else if (message.StartsWith("SPEAKING|"))
             {
                 string[] parts = message.Split('|');
-                if (parts.Length == 5)
+                if (parts.Length == 4)
                 {
                     string scene = parts[1];
                     string name = parts[2];
-                    string steamId = parts[3];
-                    Debug.Log($"[VoiceChat] SPEAKING: {name} ({steamId}) in scene {scene}");
 
                     if (SceneManager.GetActiveScene().name == scene)
                         VoiceManager.AllowScenePlayback(scene, name);
@@ -257,8 +252,8 @@ namespace DEPOVoiceChat
                 lock (msgLock) { msg = lastMessage; }
                 if (msg.Contains(expected)) return true;
 
-                await Task.Delay(100);
-                waited += 100;
+                await Task.Delay(10);
+                waited += 10;
             }
             return false;
         }
