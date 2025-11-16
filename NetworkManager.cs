@@ -12,6 +12,7 @@ namespace DEPOVoiceChat
     /// <summary>
     /// handles tcp connection, message sending, receiving and client list management
     /// manages reconnecting automatically if connection is lost
+    /// improved with proper async/await, cancellation, and error handling
     /// </summary>
     public static class NetworkManager
     {
@@ -47,6 +48,7 @@ namespace DEPOVoiceChat
         /// <summary>
         /// connects to tcp server and starts heartbeat and receive loops
         /// sends initial client info and waits for clients list response
+        /// includes retry, exception handling, and cancellation support
         /// </summary>
         public static async Task<bool> Connect()
         {
@@ -56,6 +58,7 @@ namespace DEPOVoiceChat
             State = ConnectionState.Connecting;
             Cleanup();
             cts = new CancellationTokenSource();
+            CancellationToken token = cts.Token;
 
             try
             {
@@ -68,9 +71,10 @@ namespace DEPOVoiceChat
                 await SendMessage(info);
 
                 bool ok = await WaitForResponse("CLIENTS|", 2000);
+                if (!ok) Debug.LogWarning("[VoiceChat] CLIENTS response timeout.");
 
-                _ = Task.Run(() => HeartbeatLoop(cts.Token));
-                _ = Task.Run(() => ReceiveLoop(cts.Token));
+                _ = Task.Run(() => HeartbeatLoop(token), token);
+                _ = Task.Run(() => ReceiveLoop(token), token);
 
                 State = ConnectionState.Connected;
                 StartMonitor();
@@ -78,7 +82,7 @@ namespace DEPOVoiceChat
             }
             catch (Exception ex)
             {
-                Debug.LogError("[VoiceChat] Connect error: " + ex.Message);
+                Debug.LogError("[VoiceChat] Connect error: " + ex);
                 Disconnect();
                 StartReconnectLoop();
                 return false;
@@ -87,24 +91,31 @@ namespace DEPOVoiceChat
 
         /// <summary>
         /// continuously checks connection state and starts reconnect if needed
+        /// safe cancellation and exception handling
         /// </summary>
         private static void StartMonitor()
         {
             monitorCts?.Cancel();
             monitorCts = new CancellationTokenSource();
+            CancellationToken token = monitorCts.Token;
 
             _ = Task.Run(async () =>
             {
-                while (!monitorCts.IsCancellationRequested)
+                while (!token.IsCancellationRequested)
                 {
-                    await Task.Delay(3000);
-                    if (State != ConnectionState.Connected && !reconnecting)
+                    try
                     {
-                        Debug.LogWarning("[VoiceChat] Connection lost. Trying to reconnect...");
-                        StartReconnectLoop();
+                        await Task.Delay(3000, token);
+                        if (State != ConnectionState.Connected && !reconnecting)
+                        {
+                            Debug.LogWarning("[VoiceChat] Connection lost. Trying to reconnect...");
+                            StartReconnectLoop();
+                        }
                     }
+                    catch (TaskCanceledException) { break; }
+                    catch (Exception ex) { Debug.LogError("[VoiceChat] Monitor error: " + ex); }
                 }
-            }, monitorCts.Token);
+            }, token);
         }
 
         /// <summary>
@@ -124,6 +135,7 @@ namespace DEPOVoiceChat
                 {
                     Debug.Log($"[VoiceChat] Reconnecting in {delay / 1000}s...");
                     await Task.Delay(delay);
+
                     bool ok = await Connect();
                     if (ok)
                     {
@@ -141,16 +153,20 @@ namespace DEPOVoiceChat
         /// <summary>
         /// sends a tcp message if connected
         /// starts reconnect if send fails
+        /// includes exception handling and token safety
         /// </summary>
         public static async Task SendMessage(string msg)
         {
             if (tcpClient != null && tcpClient.Connected)
             {
                 byte[] data = Encoding.UTF8.GetBytes(msg);
-                try { await stream.WriteAsync(data, 0, data.Length); }
-                catch
+                try
                 {
-                    Debug.LogError("[VoiceChat] Failed to send TCP message. Will reconnect...");
+                    await stream.WriteAsync(data, 0, data.Length);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError("[VoiceChat] Failed to send TCP message: " + ex);
                     Disconnect();
                     StartReconnectLoop();
                 }
@@ -163,21 +179,28 @@ namespace DEPOVoiceChat
 
         /// <summary>
         /// sends periodic heartbeat messages to keep connection alive
+        /// includes safe cancellation handling
         /// </summary>
         private static async Task HeartbeatLoop(CancellationToken token)
         {
-            while (!token.IsCancellationRequested)
+            try
             {
-                await Task.Delay(heartbeatInterval, token).ContinueWith(_ => { });
-                if (token.IsCancellationRequested) break;
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(heartbeatInterval, token).ContinueWith(_ => { });
+                    if (token.IsCancellationRequested) break;
 
-                await SendMessage("HEARTBEAT");
+                    await SendMessage("HEARTBEAT");
+                }
             }
+            catch (TaskCanceledException) { }
+            catch (Exception ex) { Debug.LogError("[VoiceChat] HeartbeatLoop error: " + ex); }
         }
 
         /// <summary>
         /// continuously reads messages from tcp stream
         /// handles disconnects and reconnects automatically
+        /// logs errors and prevents unobserved exceptions
         /// </summary>
         private static async Task ReceiveLoop(CancellationToken token)
         {
@@ -193,9 +216,10 @@ namespace DEPOVoiceChat
                     HandleServerMessage(message);
                 }
             }
+            catch (TaskCanceledException) { }
             catch (Exception ex)
             {
-                Debug.LogWarning("[VoiceChat] ReceiveLoop error: " + ex.Message);
+                Debug.LogWarning("[VoiceChat] ReceiveLoop error: " + ex);
             }
             finally
             {
@@ -208,40 +232,49 @@ namespace DEPOVoiceChat
         /// <summary>
         /// parses messages from server
         /// updates client list or triggers playback for speaking clients
+        /// includes thread-safety and error handling
         /// </summary>
         private static void HandleServerMessage(string message)
         {
             lock (msgLock) { lastMessage = message; }
 
-            if (message.StartsWith("CLIENTS"))
+            try
             {
-                ClientList.Clear();
-                string[] parts = message.Split('|');
-                if (parts.Length > 1)
+                if (message.StartsWith("CLIENTS"))
                 {
-                    foreach (var c in parts[1].Split(','))
+                    ClientList.Clear();
+                    string[] parts = message.Split('|');
+                    if (parts.Length > 1)
                     {
-                        var kv = c.Split(':');
-                        if (kv.Length == 2) ClientList[kv[0]] = kv[1];
+                        foreach (var c in parts[1].Split(','))
+                        {
+                            var kv = c.Split(':');
+                            if (kv.Length == 2) ClientList[kv[0]] = kv[1];
+                        }
+                    }
+                }
+                else if (message.StartsWith("SPEAKING|"))
+                {
+                    string[] parts = message.Split('|');
+                    if (parts.Length == 4)
+                    {
+                        string scene = parts[1];
+                        string name = parts[2];
+
+                        if (SceneManager.GetActiveScene().name == scene)
+                            VoiceManager.AllowScenePlayback(scene, name);
                     }
                 }
             }
-            else if (message.StartsWith("SPEAKING|"))
+            catch (Exception ex)
             {
-                string[] parts = message.Split('|');
-                if (parts.Length == 4)
-                {
-                    string scene = parts[1];
-                    string name = parts[2];
-
-                    if (SceneManager.GetActiveScene().name == scene)
-                        VoiceManager.AllowScenePlayback(scene, name);
-                }
+                Debug.LogWarning("[VoiceChat] HandleServerMessage error: " + ex);
             }
         }
 
         /// <summary>
         /// waits until a specific message appears or timeout elapses
+        /// includes safe cancellation
         /// </summary>
         public static async Task<bool> WaitForResponse(string expected, int timeoutMs)
         {
@@ -260,6 +293,7 @@ namespace DEPOVoiceChat
 
         /// <summary>
         /// stops connection, cancels loops and disposes tcp client and stream
+        /// safe for multiple calls
         /// </summary>
         public static void Disconnect()
         {
@@ -267,12 +301,14 @@ namespace DEPOVoiceChat
             {
                 State = ConnectionState.Disconnected;
                 cts?.Cancel();
+                monitorCts?.Cancel();
                 stream?.Close();
                 tcpClient?.Close();
 
                 tcpClient = null;
                 stream = null;
                 cts = null;
+                monitorCts = null;
             }
             catch { }
         }
@@ -293,6 +329,7 @@ namespace DEPOVoiceChat
                 tcpClient = null;
                 stream = null;
                 cts = null;
+                monitorCts = null;
             }
             catch { }
         }

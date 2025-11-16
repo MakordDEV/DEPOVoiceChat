@@ -7,17 +7,17 @@ using UnityEngine.UI;
 namespace DEPOVoiceChat
 {
     /// <summary>
-    /// handles showing a speaking indicator for players with detailed debug logs
+    /// handles showing a speaking indicator for players with robust threading, safe coroutines, and dynamic localization
     /// </summary>
     public class SpeakingIndicator : MonoBehaviour
     {
         public static readonly Dictionary<string, float> speakingPlayers = new Dictionary<string, float>();
         public static readonly Dictionary<string, Coroutine> activeCoroutines = new Dictionary<string, Coroutine>();
         public static readonly object lockObj = new object();
-
-        public static string oldSpeakText;
         public static string speakText = $"[{Localization.T("speaking")}]";
-        private static readonly float silenceTimeout = 1f;
+
+        private static string oldSpeakText;
+        private const float silenceTimeout = 1f;
 
         /// <summary>
         /// updates all speaking indicators and removes timed out players
@@ -27,7 +27,7 @@ namespace DEPOVoiceChat
             float currentTime = Time.time;
             List<string> toRemove = new List<string>();
 
-            if (speakText != $"[{Localization.T("speaking")}]") 
+            if (speakText != $"[{Localization.T("speaking")}]")
                 UpdateSpeakText();
 
             lock (lockObj)
@@ -35,25 +35,19 @@ namespace DEPOVoiceChat
                 foreach (var kvp in speakingPlayers)
                 {
                     if (currentTime - kvp.Value > silenceTimeout)
-                    {
                         toRemove.Add(kvp.Key);
-                    }
                 }
 
                 foreach (string name in toRemove)
-                {
                     speakingPlayers.Remove(name);
-                }
             }
 
             foreach (string name in toRemove)
-            {
                 RemoveIndicator(name);
-            }
         }
 
         /// <summary>
-        /// updates the speaking text after language change
+        /// updates speaking text dynamically after language change
         /// </summary>
         public static void UpdateSpeakText()
         {
@@ -63,19 +57,16 @@ namespace DEPOVoiceChat
             UnityMainThreadDispatcher.Enqueue(() =>
             {
                 Text[] texts = GameObject.FindObjectsOfType<Text>(true);
-
                 foreach (var t in texts)
                 {
                     if (!string.IsNullOrEmpty(oldSpeakText) && t.text.Contains(oldSpeakText))
-                    {
                         t.text = t.text.Replace(oldSpeakText, speakText);
-                    }
                 }
             });
         }
 
         /// <summary>
-        /// handles a player starting to speak using dispatcher 
+        /// triggers player speaking indicator with safe coroutine handling
         /// </summary>
         public static void OnPlayerSpeaking(string name)
         {
@@ -91,43 +82,39 @@ namespace DEPOVoiceChat
             {
                 speakingPlayers[name] = Time.time;
                 if (!activeCoroutines.ContainsKey(name))
-                {
                     startCoroutine = true;
-                }
             }
 
             if (startCoroutine)
             {
                 UnityMainThreadDispatcher.Enqueue(() =>
                 {
-                    Coroutine c = DispatcherAddIndicatorCoroutine(name);
+                    var c = StartAddIndicatorCoroutine(name);
                     lock (lockObj)
-                    {
                         activeCoroutines[name] = c;
-                    }
                 });
             }
         }
 
         /// <summary>
-        /// starts add indicator coroutine via dispatcher
+        /// safely starts add-indicator coroutine and cleans up after finish
         /// </summary>
-        private static Coroutine DispatcherAddIndicatorCoroutine(string playerName)
+        private static Coroutine StartAddIndicatorCoroutine(string playerName)
         {
-            var dummyObj = new GameObject($"DispatcherCoroutine_{playerName}");
-            var runner = dummyObj.AddComponent<DispatcherCoroutineRunner>();
+            var obj = new GameObject($"DispatcherCoroutine_{playerName}");
+            var runner = obj.AddComponent<DispatcherCoroutineRunner>();
             return runner.StartCoroutine(runner.AddIndicatorCoroutine(playerName));
         }
 
         /// <summary>
-        /// removes indicator using dispatcher safely
+        /// safely removes indicator and cleans up coroutine object
         /// </summary>
         private static void RemoveIndicator(string playerName)
         {
             UnityMainThreadDispatcher.Enqueue(() =>
             {
-                var dummyObj = new GameObject($"DispatcherRemove_{playerName}");
-                var runner = dummyObj.AddComponent<DispatcherCoroutineRunner>();
+                var obj = new GameObject($"DispatcherRemove_{playerName}");
+                var runner = obj.AddComponent<DispatcherCoroutineRunner>();
                 runner.StartCoroutine(runner.RemoveIndicatorCoroutine(playerName));
             });
         }
@@ -141,24 +128,19 @@ namespace DEPOVoiceChat
             return found;
         }
     }
+
     /// <summary>
-    /// helper component for running coroutines
+    /// helper component for running coroutines with automatic cleanup
     /// </summary>
     public class DispatcherCoroutineRunner : MonoBehaviour
     {
         public IEnumerator AddIndicatorCoroutine(string playerName)
         {
             Text playerText = SpeakingIndicator.FindTextForPlayer(playerName);
-            if (playerText == null)
-            {
-                Debug.LogWarning($"[DispatcherCoroutineRunner] could not find Text for '{playerName}'");
-                yield break;
-            }
+            if (playerText == null) yield break;
 
             if (!playerText.text.Contains(SpeakingIndicator.speakText))
-            {
                 playerText.text += $" {SpeakingIndicator.speakText}";
-            }
 
             Outline outline = playerText.GetComponent<Outline>();
             if (outline != null)
@@ -175,19 +157,12 @@ namespace DEPOVoiceChat
                 {
                     stillSpeaking = SpeakingIndicator.speakingPlayers.ContainsKey(playerName);
                 }
-
-                if (!stillSpeaking)
-                {
-                    break;
-                }
-
+                if (!stillSpeaking) break;
                 yield return null;
             }
 
             if (playerText != null && playerText.text.Contains(SpeakingIndicator.speakText))
-            {
                 playerText.text = playerText.text.Replace($" {SpeakingIndicator.speakText}", "");
-            }
 
             if (outline != null)
             {
@@ -197,9 +172,7 @@ namespace DEPOVoiceChat
             }
 
             lock (SpeakingIndicator.lockObj)
-            {
                 SpeakingIndicator.activeCoroutines.Remove(playerName);
-            }
 
             VoiceManager.RemoveFromSpeaking(playerName);
             Destroy(gameObject);
@@ -209,9 +182,7 @@ namespace DEPOVoiceChat
         {
             Text playerText = SpeakingIndicator.FindTextForPlayer(playerName);
             if (playerText != null && playerText.text.Contains(SpeakingIndicator.speakText))
-            {
                 playerText.text = playerText.text.Replace($" {SpeakingIndicator.speakText}", "");
-            }
 
             Outline outline = playerText?.GetComponent<Outline>();
             if (outline != null)
@@ -222,9 +193,7 @@ namespace DEPOVoiceChat
             }
 
             lock (SpeakingIndicator.lockObj)
-            {
                 SpeakingIndicator.activeCoroutines.Remove(playerName);
-            }
 
             VoiceManager.RemoveFromSpeaking(playerName);
             Destroy(gameObject);
