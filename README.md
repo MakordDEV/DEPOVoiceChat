@@ -94,6 +94,10 @@ to a GitHub Issue or directly to me on Discord/X: `makordikrom`.
 **A:** Occasionally, during minor or quick commits, I might use random words as commit names. In releases and important commits, I always provide meaningful comments.
 
 
+### **Q: How to open voicechat menu?**  
+**A:** Press LCtrl in the game, then press Q or another assigned key. You can keep voicechat menu open without opening online interaction menu, even if you don’t interact with it. However, if you want to interact with voicechat menu, the online interaction menu or the pause menu must be open.
+
+
 ### **Q: Can I completely disable voice chat?**  
 **A:** Yes. In the mod settings, you can turn off both voice transmission and receiving audio from other players.
 
